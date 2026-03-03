@@ -3,7 +3,8 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.sql import func
 from sqlalchemy.orm import selectinload
 from telegram import Update
 from telegram.ext import (
@@ -21,6 +22,8 @@ from bot.keyboards import (
     CB_DONE,
     main_menu,
     workout_in_progress_keyboard,
+    workout_pick_exercise_keyboard,
+    workout_confirm_create_exercise_keyboard,
     workout_voice_review_keyboard,
     workout_template_select_keyboard,
 )
@@ -37,29 +40,51 @@ async def _get_user(session, telegram_id: int, username: str | None) -> User:
     return await get_or_create_user(session, telegram_id, username)
 
 
+async def _find_matching_exercises(
+    session, user_id: int, name: str, template_exercise_ids: list[int] | None
+) -> list[Exercise]:
+    """Ищет упражнения по имени: точное совпадение, вхождение, по словам."""
+    base_filter = Exercise.user_id == user_id
+    if template_exercise_ids:
+        base_filter = base_filter & (Exercise.id.in_(template_exercise_ids))
+    # 1. Точное совпадение
+    result = await session.execute(
+        select(Exercise).where(base_filter, func.lower(Exercise.name) == name.lower())
+    )
+    exact = list(result.scalars().unique().all())
+    if exact:
+        return exact
+    # 2. Вхождение: «жим» находит «жим лежа»
+    if len(name) >= 2:
+        result = await session.execute(
+            select(Exercise).where(
+                base_filter,
+                func.lower(Exercise.name).like(f"%{name.lower()}%"),
+            ).order_by(Exercise.name)
+        )
+        contains = list(result.scalars().unique().all())
+        if contains:
+            return contains
+    # 3. По словам
+    words = [w for w in name.split() if len(w) >= 2]
+    if words:
+        conditions = [func.lower(Exercise.name).like(f"%{w.lower()}%") for w in words]
+        result = await session.execute(
+            select(Exercise).where(base_filter, or_(*conditions)).order_by(Exercise.name)
+        )
+        return list(result.scalars().unique().all())
+    return []
+
+
 async def _find_or_create_exercise(
     session, user_id: int, name: str, template_exercise_ids: list[int] | None = None
 ) -> Exercise:
     """Ищет упражнение по имени или создаёт новое. Упражнения существуют отдельно."""
-    if template_exercise_ids:
-        result = await session.execute(
-            select(Exercise).where(
-                Exercise.id.in_(template_exercise_ids),
-                Exercise.name == name,
-            )
-        )
-        ex = result.scalars().first()
-        if ex:
-            return ex
-        ex = Exercise(user_id=user_id, name=name, body_part="Другое")
-    else:
-        result = await session.execute(
-            select(Exercise).where(Exercise.user_id == user_id, Exercise.name == name)
-        )
-        ex = result.scalars().first()
-        if ex:
-            return ex
-        ex = Exercise(user_id=user_id, name=name, body_part="Свободная")
+    matches = await _find_matching_exercises(session, user_id, name, template_exercise_ids)
+    if matches:
+        return matches[0]
+    body = "Другое" if template_exercise_ids else "Свободная"
+    ex = Exercise(user_id=user_id, name=name, body_part=body)
     session.add(ex)
     await session.flush()
     return ex
@@ -143,7 +168,9 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             _clear_pending_voice(context)
             await update.message.reply_text("Исправление отменено.")
             return States.WORKOUT_INPUT.value
-        saved = await _save_parsed_input(update=update, text=text, session_id=session_id)
+        saved = await _save_parsed_input(update, context, text, session_id)
+        if saved == SAVE_PENDING:
+            return States.WORKOUT_INPUT.value
         if not saved:
             await update.message.reply_text(
                 "Не удалось разобрать исправленный текст.\n"
@@ -154,11 +181,9 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text(f"✅ {saved}")
         return States.WORKOUT_INPUT.value
 
-    saved = await _save_parsed_input(
-        update=update,
-        text=text,
-        session_id=session_id,
-    )
+    saved = await _save_parsed_input(update, context, text, session_id)
+    if saved == SAVE_PENDING:
+        return States.WORKOUT_INPUT.value
     if not saved:
         await update.message.reply_text(
             "Не удалось распознать. Примеры:\nжим 4×8×80\nжим 5 по 15\nприсед 3 по 10 с 100 кг",
@@ -221,7 +246,10 @@ async def workout_voice_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         _clear_pending_voice(context)
         return States.WORKOUT_INPUT.value
 
-    saved = await _save_parsed_input(update=update, text=recognized_text, session_id=session_id)
+    saved = await _save_parsed_input(update, context, recognized_text, session_id)
+    if saved == SAVE_PENDING:
+        _clear_pending_voice(context)
+        return States.WORKOUT_INPUT.value
     if not saved:
         await query.edit_message_text(
             "Не удалось разобрать распознанный текст.\n"
@@ -273,11 +301,113 @@ def _clear_pending_voice(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("awaiting_voice_correction", None)
 
 
-async def _save_parsed_input(update: Update, text: str, session_id: int) -> str | None:
+def _clear_pending_pick(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("pending_workout_pick", None)
+
+
+async def _do_save_workout_log(
+    session, session_id: int, exercise_id: int, sets: int, reps: int | None, weight_kg: float
+) -> tuple[str, str]:
+    """Сохраняет запись и возвращает (имя_упражнения, body_part)."""
+    ex_result = await session.execute(select(Exercise).where(Exercise.id == exercise_id))
+    ex = ex_result.scalar_one_or_none()
+    log = ExerciseLog(
+        session_id=session_id,
+        exercise_id=exercise_id,
+        sets=sets,
+        reps=reps,
+        weight_kg=weight_kg,
+    )
+    session.add(log)
+    name = ex.name if ex else str(exercise_id)
+    body = getattr(ex, "body_part", "—")
+    return name, body
+
+
+async def workout_pick_exercise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор существующего упражнения из списка совпадений."""
+    query = update.callback_query
+    if not query or not query.data:
+        return States.WORKOUT_INPUT.value
+    await query.answer()
+    parts = query.data.split(":")
+    if len(parts) < 4 or parts[1] != "pick_ex":
+        return States.WORKOUT_INPUT.value
+    session_id = int(parts[2])
+    ex_id = int(parts[3])
+    pending = context.user_data.pop("pending_workout_pick", None)
+    if not pending:
+        await query.edit_message_text("Сессия истекла. Введите упражнение заново.")
+        return States.WORKOUT_INPUT.value
+    async with get_session() as session:
+        name, body = await _do_save_workout_log(
+            session, session_id, ex_id,
+            pending["sets"], pending.get("reps"), pending["weight_kg"],
+        )
+    reps_str = f"×{pending.get('reps')}" if pending.get("reps") else ""
+    await query.edit_message_text(
+        f"✅ {name} ({body}): {pending['sets']}{reps_str}×{pending['weight_kg']} кг"
+    )
+    return States.WORKOUT_INPUT.value
+
+
+async def workout_pick_create(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Создание нового упражнения и сохранение записи."""
+    query = update.callback_query
+    if not query or not query.data:
+        return States.WORKOUT_INPUT.value
+    await query.answer()
+    parts = query.data.split(":")
+    if len(parts) < 3 or parts[1] != "pick_new":
+        return States.WORKOUT_INPUT.value
+    session_id = int(parts[2])
+    pending = context.user_data.pop("pending_workout_pick", None)
+    if not pending or not update.effective_user:
+        await query.edit_message_text("Сессия истекла. Введите упражнение заново.")
+        return States.WORKOUT_INPUT.value
+    async with get_session() as session:
+        result = await session.execute(
+            select(WorkoutSession)
+            .options(selectinload(WorkoutSession.template).selectinload(WorkoutTemplate.template_exercises))
+            .where(WorkoutSession.id == session_id)
+        )
+        wrk = result.scalar_one_or_none()
+        template_exercise_ids = None
+        if wrk and wrk.template and wrk.template.template_exercises:
+            template_exercise_ids = [te.exercise_id for te in wrk.template.template_exercises]
+        user = await _get_user(session, update.effective_user.id, update.effective_user.username)
+        ex = await _find_or_create_exercise(session, user.id, pending["name"], template_exercise_ids)
+        name, body = await _do_save_workout_log(
+            session, session_id, ex.id,
+            pending["sets"], pending.get("reps"), pending["weight_kg"],
+        )
+    reps_str = f"×{pending.get('reps')}" if pending.get("reps") else ""
+    await query.edit_message_text(
+        f"✅ {name} ({body}) — создано и записано: {pending['sets']}{reps_str}×{pending['weight_kg']} кг"
+    )
+    return States.WORKOUT_INPUT.value
+
+
+async def workout_pick_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена выбора упражнения."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+        _clear_pending_pick(context)
+        await query.edit_message_text("Отменено. Введите упражнение заново.")
+    return States.WORKOUT_INPUT.value
+
+
+SAVE_PENDING = "_PENDING_PICK"
+
+
+async def _save_parsed_input(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, session_id: int
+) -> str | None:
     parsed = parse_exercise_line(text)
     if not parsed:
         return None
-    if not update.effective_user:
+    if not update.effective_user or not update.effective_chat:
         return None
 
     async with get_session() as session:
@@ -293,19 +423,50 @@ async def _save_parsed_input(update: Update, text: str, session_id: int) -> str 
         if wrk_session.template and wrk_session.template.template_exercises:
             template_exercise_ids = [te.exercise_id for te in wrk_session.template.template_exercises]
         user = await _get_user(session, update.effective_user.id, update.effective_user.username)
-        ex = await _find_or_create_exercise(session, user.id, parsed.name, template_exercise_ids)
-        log = ExerciseLog(
-            session_id=session_id,
-            exercise_id=ex.id,
-            sets=parsed.sets,
-            reps=parsed.reps,
-            weight_kg=parsed.weight_kg,
-        )
-        session.add(log)
-        body_part = ex.body_part
+        matches = await _find_matching_exercises(session, user.id, parsed.name, template_exercise_ids)
 
-    reps_str = f"×{parsed.reps}" if parsed.reps else ""
-    return f"{parsed.name} ({body_part}): {parsed.sets}{reps_str}×{parsed.weight_kg} кг"
+        if len(matches) == 1:
+            ex = matches[0]
+            log = ExerciseLog(
+                session_id=session_id,
+                exercise_id=ex.id,
+                sets=parsed.sets,
+                reps=parsed.reps,
+                weight_kg=parsed.weight_kg,
+            )
+            session.add(log)
+            reps_str = f"×{parsed.reps}" if parsed.reps else ""
+            return f"{ex.name} ({ex.body_part}): {parsed.sets}{reps_str}×{parsed.weight_kg} кг"
+
+        if len(matches) > 1:
+            context.user_data["pending_workout_pick"] = {
+                "session_id": session_id,
+                "name": parsed.name,
+                "sets": parsed.sets,
+                "reps": parsed.reps,
+                "weight_kg": parsed.weight_kg,
+            }
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Найдено несколько упражнений. Выберите или создайте новое:",
+                reply_markup=workout_pick_exercise_keyboard(session_id, matches, parsed.name),
+            )
+            return SAVE_PENDING
+
+        # 0 совпадений — предлагаем создать
+        context.user_data["pending_workout_pick"] = {
+            "session_id": session_id,
+            "name": parsed.name,
+            "sets": parsed.sets,
+            "reps": parsed.reps,
+            "weight_kg": parsed.weight_kg,
+        }
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Упражнение «{parsed.name}» не найдено. Создать новое?",
+            reply_markup=workout_confirm_create_exercise_keyboard(session_id, parsed.name),
+        )
+        return SAVE_PENDING
 
 
 async def workout_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -398,6 +559,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("workout_session_id", None)
     context.user_data.pop("workout_template_id", None)
     _clear_pending_voice(context)
+    _clear_pending_pick(context)
     return ConversationHandler.END
 
 
@@ -418,6 +580,9 @@ def setup_workout_handlers(application):
                 CallbackQueryHandler(workout_voice_confirm, pattern=f"^{CB_WORKOUT}:voice_confirm$"),
                 CallbackQueryHandler(workout_voice_edit, pattern=f"^{CB_WORKOUT}:voice_edit$"),
                 CallbackQueryHandler(workout_voice_cancel, pattern=f"^{CB_WORKOUT}:voice_cancel$"),
+                CallbackQueryHandler(workout_pick_exercise, pattern=f"^{CB_WORKOUT}:pick_ex:\\d+:\\d+$"),
+                CallbackQueryHandler(workout_pick_create, pattern=f"^{CB_WORKOUT}:pick_new:\\d+$"),
+                CallbackQueryHandler(workout_pick_cancel, pattern=f"^{CB_WORKOUT}:pick_cancel:\\d+$"),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],

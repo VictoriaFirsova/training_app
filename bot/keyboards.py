@@ -193,6 +193,32 @@ def template_new_exercise_body_part_keyboard(template_id: int) -> InlineKeyboard
     return InlineKeyboardMarkup(buttons)
 
 
+def workout_pick_exercise_keyboard(
+    session_id: int, exercises: list, parsed_name: str
+) -> InlineKeyboardMarkup:
+    """Выбор упражнения при нескольких совпадениях или создание нового."""
+    buttons = []
+    for ex in exercises[:8]:
+        label = f"{ex.name} ({getattr(ex, 'body_part', 'Другое')})"
+        buttons.append([
+            InlineKeyboardButton(label, callback_data=f"{CB_WORKOUT}:pick_ex:{session_id}:{ex.id}"),
+        ])
+    buttons.append([
+        InlineKeyboardButton(f"➕ Создать «{parsed_name}»", callback_data=f"{CB_WORKOUT}:pick_new:{session_id}"),
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
+def workout_confirm_create_exercise_keyboard(session_id: int, parsed_name: str) -> InlineKeyboardMarkup:
+    """Подтверждение создания нового упражнения."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Да, создать", callback_data=f"{CB_WORKOUT}:pick_new:{session_id}"),
+            InlineKeyboardButton("❌ Отмена", callback_data=f"{CB_WORKOUT}:pick_cancel:{session_id}"),
+        ],
+    ])
+
+
 def workout_voice_review_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
