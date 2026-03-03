@@ -427,7 +427,8 @@ async def _save_parsed_input(
         search_name = parsed.name.strip().rstrip(".,;:!? ")
         matches = await _find_matching_exercises(session, user.id, search_name, template_exercise_ids)
 
-        if len(matches) == 1:
+        # Точное совпадение — сохраняем сразу
+        if len(matches) == 1 and matches[0].name.lower() == search_name.lower():
             ex = matches[0]
             log = ExerciseLog(
                 session_id=session_id,
@@ -440,7 +441,8 @@ async def _save_parsed_input(
             reps_str = f"×{parsed.reps}" if parsed.reps else ""
             return f"{ex.name} ({ex.body_part}): {parsed.sets}{reps_str}×{parsed.weight_kg} кг"
 
-        if len(matches) > 1:
+        # Частичное совпадение (1 или больше) — спрашиваем подтверждение
+        if len(matches) >= 1:
             context.user_data["pending_workout_pick"] = {
                 "session_id": session_id,
                 "name": parsed.name,
