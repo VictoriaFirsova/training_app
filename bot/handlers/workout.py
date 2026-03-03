@@ -423,7 +423,9 @@ async def _save_parsed_input(
         if wrk_session.template and wrk_session.template.template_exercises:
             template_exercise_ids = [te.exercise_id for te in wrk_session.template.template_exercises]
         user = await _get_user(session, update.effective_user.id, update.effective_user.username)
-        matches = await _find_matching_exercises(session, user.id, parsed.name, template_exercise_ids)
+        # Нормализуем название: убираем пробелы и пунктуацию для поиска
+        search_name = parsed.name.strip().rstrip(".,;:!? ")
+        matches = await _find_matching_exercises(session, user.id, search_name, template_exercise_ids)
 
         if len(matches) == 1:
             ex = matches[0]
