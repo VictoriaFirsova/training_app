@@ -180,12 +180,12 @@ def parse_exercise_line(text: str) -> Optional[ParsedExercise]:
     if reps_match:
         reps = int(reps_match.group(1) or reps_match.group(2))
 
-    # "N по M" — два варианта:
-    # 1) N повторений по M кг (1 подход): жим 5 по 15
+    # "N по M" / "N на M" — два варианта:
+    # 1) N повторений по M кг (1 подход): жим 5 по 15, жим 25 на 30
     # 2) N подходов по M повторений: 3 по 10 с 100
     # Если вес = M (второе число), то M — это вес, N — повторения, 1 подход.
     # Если есть отдельно "с X" / "X кг", то N — подходы, M — повторения.
-    alt_reps = re.search(r"(\d+)\s+по\s+(\d+(?:[.,]\d+)?)", text)
+    alt_reps = re.search(r"(\d+)\s+(?:по|на)\s+(\d+(?:[.,]\d+)?)", text)
     if alt_reps and not reps:
         n_val = int(alt_reps.group(1))
         m_val = float(alt_reps.group(2).replace(",", "."))
