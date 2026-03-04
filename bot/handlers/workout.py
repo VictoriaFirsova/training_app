@@ -170,6 +170,7 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return States.WORKOUT_INPUT.value
         saved = await _save_parsed_input(update, context, text, session_id)
         if saved == SAVE_PENDING:
+            _clear_pending_voice(context)
             return States.WORKOUT_INPUT.value
         if not saved:
             await update.message.reply_text(
@@ -276,6 +277,7 @@ async def workout_voice_edit(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(
         "Введите исправленный текст вручную.\n"
         "Для отмены напишите «отмена».",
+        reply_markup=None,
     )
     # Отправляем отдельным сообщением, чтобы удобнее было скопировать и поправить 1-2 символа.
     if query.message:
@@ -427,6 +429,10 @@ async def _save_parsed_input(
         search_name = parsed.name.strip().rstrip(".,;:!? ")
         matches = await _find_matching_exercises(session, user.id, search_name, template_exercise_ids)
 
+        # Если в шаблоне 0 совпадений — ищем по всем упражнениям пользователя
+        if not matches and template_exercise_ids:
+            matches = await _find_matching_exercises(session, user.id, search_name, None)
+
         # Точное совпадение — сохраняем сразу
         if len(matches) == 1 and matches[0].name.lower() == search_name.lower():
             ex = matches[0]
@@ -502,6 +508,8 @@ async def workout_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     context.user_data.pop("workout_session_id", None)
     context.user_data.pop("workout_template_id", None)
+    _clear_pending_voice(context)
+    _clear_pending_pick(context)
     return ConversationHandler.END
 
 
