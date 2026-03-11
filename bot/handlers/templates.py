@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 
 from bot.handlers.common import get_or_create_user, safe_edit_message_text
-from bot.messages import RESTART_MSG
+from config import RESTART_MSG
 from bot.handlers.exercises import _find_similar_exercises
 from bot.keyboards import (
     BODY_PARTS,

@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 from bot.handlers.common import get_or_create_user
-from bot.messages import RESTART_MSG
+from config import RESTART_MSG
 from bot.keyboards import (
     BODY_PARTS,
     CB_WORKOUT,
