@@ -38,6 +38,8 @@ async def get_or_create_user(session: AsyncSession, telegram_id: int, username: 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user:
         return
+    uid = update.effective_user.id
+    logger.info("cmd_start | user=%s", uid)
     async with get_session() as session:
         await get_or_create_user(
             session,
@@ -61,6 +63,8 @@ async def callback_main(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not query:
         return
     data = query.data or ""
+    uid = query.from_user.id if query.from_user else 0
+    logger.info("callback_main | user=%s data=%s", uid, data)
     if data == f"{CB_MAIN}:menu":
         await safe_edit_message_text(
             query,

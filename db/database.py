@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -5,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from config import DATABASE_URL
 from db.models import Base
+
+logger = logging.getLogger(__name__)
 
 engine = create_async_engine(
     DATABASE_URL,
@@ -21,10 +24,30 @@ async_session_factory = async_sessionmaker(
 
 
 async def init_database() -> None:
+    db_info = "postgres" if "postgresql" in str(engine.url) else "sqlite"
+    logger.info("Инициализация БД: %s", db_info)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Мягкая миграция SQLite: group_name → body_part (PostgreSQL использует create_all)
-        if "sqlite" in str(engine.url):
+        logger.debug("Таблицы созданы/проверены")
+        url_str = str(engine.url)
+        if "postgresql" in url_str:
+            # Миграция: TIMESTAMP → TIMESTAMP WITH TIME ZONE (Тбилиси UTC+4)
+            for table, cols in [
+                ("users", ["created_at"]),
+                ("exercises", ["created_at"]),
+                ("workout_templates", ["created_at"]),
+                ("workout_sessions", ["started_at", "ended_at"]),
+                ("exercise_logs", ["created_at"]),
+            ]:
+                for col in cols:
+                    try:
+                        await conn.exec_driver_sql(
+                            f'ALTER TABLE {table} ALTER COLUMN {col} '
+                            f"TYPE TIMESTAMP WITH TIME ZONE USING {col} AT TIME ZONE 'UTC'"
+                        )
+                    except Exception as e:
+                        logger.debug("Миграция %s.%s: %s", table, col, e)
+        elif "sqlite" in url_str:
             result = await conn.exec_driver_sql("PRAGMA table_info(exercises)")
             columns = [row[1] for row in result.fetchall()]
             if "body_part" not in columns:
@@ -48,8 +71,10 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
-        except Exception:
+            logger.debug("DB commit OK")
+        except Exception as e:
             await session.rollback()
+            logger.warning("DB rollback из-за: %s", e, exc_info=True)
             raise
         finally:
             await session.close()

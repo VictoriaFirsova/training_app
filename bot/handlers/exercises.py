@@ -197,6 +197,8 @@ async def exercise_add_body_part(update: Update, context: ContextTypes.DEFAULT_T
         user = await _get_user(session, update.effective_user.id, update.effective_user.username)
         ex = Exercise(user_id=user.id, name=name, body_part=body_part)
         session.add(ex)
+        await session.flush()
+        logger.info("exercise_add | user=%s ex_id=%s name=%r", user.id, ex.id, name)
     await query.edit_message_text(f"✅ Упражнение «{name}» ({body_part}) добавлено.", reply_markup=exercise_after_add_keyboard())
     return ConversationHandler.END
 

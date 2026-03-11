@@ -197,6 +197,7 @@ async def template_add_exercise_new_name(update: Update, context: ContextTypes.D
             ex = Exercise(user_id=user.id, name=name, body_part=body_part)
             session.add(ex)
             await session.flush()
+            logger.info("template_add_exercise | NEW ex user=%s ex_id=%s template_id=%s name=%r", user.id, ex.id, t_id, name)
             order = max([te.order for te in tpl.template_exercises], default=0) + 1
             te = TemplateExercise(template_id=t_id, exercise_id=ex.id, order=order)
             session.add(te)
@@ -295,6 +296,7 @@ async def template_add_exercise_pick_or_create(update: Update, context: ContextT
                 ex = Exercise(user_id=user.id, name=name, body_part=body_part)
                 session.add(ex)
                 await session.flush()
+                logger.info("template_add_exercise | NEW ex (create_anyway) user=%s ex_id=%s template_id=%s name=%r", user.id, ex.id, t_id, name)
                 order = max([te.order for te in tpl.template_exercises], default=0) + 1
                 te = TemplateExercise(template_id=t_id, exercise_id=ex.id, order=order)
                 session.add(te)
@@ -360,6 +362,7 @@ async def template_add_exercise_new_body(update: Update, context: ContextTypes.D
         ex = Exercise(user_id=user.id, name=name, body_part=body_part)
         session.add(ex)
         await session.flush()
+        logger.info("template_add_exercise | NEW ex (ex_body) user=%s ex_id=%s template_id=%s name=%r", user.id, ex.id, t_id, name)
         order = max([te.order for te in tpl.template_exercises], default=0) + 1
         te = TemplateExercise(template_id=t_id, exercise_id=ex.id, order=order)
         session.add(te)
@@ -405,6 +408,7 @@ async def template_add_exercise_do(update: Update, context: ContextTypes.DEFAULT
         te = TemplateExercise(template_id=t_id, exercise_id=ex_id, order=order)
         session.add(te)
         await session.flush()
+        logger.info("template_add_exercise | user=%s template_id=%s exercise_id=%s", user.id, t_id, ex_id)
         result = await session.execute(
             select(WorkoutTemplate)
             .options(selectinload(WorkoutTemplate.template_exercises).selectinload(TemplateExercise.exercise))
@@ -558,6 +562,8 @@ async def template_create_desc(update: Update, context: ContextTypes.DEFAULT_TYP
         user = await _get_user(session, update.effective_user.id, update.effective_user.username)
         tpl = WorkoutTemplate(user_id=user.id, name=name, description=desc)
         session.add(tpl)
+        await session.flush()
+        logger.info("template_create | user=%s template_id=%s name=%r", user.id, tpl.id, name)
     context.user_data.pop("template_name", None)
     context.user_data.pop("template_desc", None)
     await update.message.reply_text(

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, Text
@@ -15,7 +15,9 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
     exercises: Mapped[list["Exercise"]] = relationship(back_populates="user")
     templates: Mapped[list["WorkoutTemplate"]] = relationship(back_populates="user")
@@ -31,7 +33,9 @@ class Exercise(Base):
     )
     name: Mapped[str] = mapped_column(String(255))
     body_part: Mapped[str] = mapped_column(String(255), default="Другое")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
     user: Mapped[Optional["User"]] = relationship(back_populates="exercises")
     template_exercises: Mapped[list["TemplateExercise"]] = relationship(
@@ -49,7 +53,9 @@ class WorkoutTemplate(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
     user: Mapped["User"] = relationship(back_populates="templates")
     template_exercises: Mapped[list["TemplateExercise"]] = relationship(
@@ -80,8 +86,12 @@ class WorkoutSession(Base):
     template_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("workout_templates.id", ondelete="SET NULL"), nullable=True
     )
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="sessions")
@@ -102,7 +112,9 @@ class ExerciseLog(Base):
     sets: Mapped[int] = mapped_column(Integer)
     reps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     weight_kg: Mapped[float] = mapped_column(Float)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
     session: Mapped["WorkoutSession"] = relationship(back_populates="exercise_logs")
     exercise: Mapped["Exercise"] = relationship(back_populates="exercise_logs")

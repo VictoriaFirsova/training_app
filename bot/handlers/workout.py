@@ -1,6 +1,6 @@
 import logging
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import or_, select
@@ -87,6 +87,7 @@ async def _find_or_create_exercise(
     ex = Exercise(user_id=user_id, name=name, body_part=body)
     session.add(ex)
     await session.flush()
+    logger.info("_find_or_create_exercise | NEW user=%s ex_id=%s name=%r", user_id, ex.id, name)
     return ex
 
 
@@ -121,6 +122,8 @@ async def workout_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     context.user_data["workout_session_id"] = session_id
     context.user_data["workout_template_id"] = template_id
+    uid = update.effective_user.id if update.effective_user else 0
+    logger.info("workout_start | user=%s session_id=%s template_id=%s", uid, session_id, template_id)
     await query.edit_message_text(
         "Тренировка начата.\n\n"
         "Вводите упражнения в формате:\n"
@@ -163,6 +166,8 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return ConversationHandler.END
 
     text = update.message.text.strip()
+    uid = update.effective_user.id if update.effective_user else 0
+    logger.info("workout_input | user=%s session_id=%s text=%r", uid, session_id, text[:50])
     if context.user_data.get("awaiting_voice_correction"):
         if text.lower() in {"отмена", "cancel"}:
             _clear_pending_voice(context)
@@ -173,19 +178,23 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             _clear_pending_voice(context)
             return States.WORKOUT_INPUT.value
         if not saved:
+            logger.warning("workout_input | user=%s parse_failed (voice_correction) text=%r", uid, text[:50])
             await update.message.reply_text(
                 "Не удалось разобрать исправленный текст.\n"
                 "Введите еще раз или напишите «отмена».",
             )
             return States.WORKOUT_INPUT.value
         _clear_pending_voice(context)
+        logger.info("workout_input | user=%s saved (voice_correction) result=%s", uid, saved[:60] if saved else "")
         await update.message.reply_text(f"✅ {saved}")
         return States.WORKOUT_INPUT.value
 
     saved = await _save_parsed_input(update, context, text, session_id)
     if saved == SAVE_PENDING:
+        logger.info("workout_input | user=%s SAVE_PENDING (pick/create)", uid)
         return States.WORKOUT_INPUT.value
     if not saved:
+        logger.warning("workout_input | user=%s parse_failed text=%r", uid, text[:50])
         await update.message.reply_text(
             "Не удалось распознать. Примеры:\nжим 4×8×80\nжим 5 по 15\nприсед 3 по 10 с 100 кг",
         )
@@ -212,7 +221,7 @@ async def workout_voice_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         await voice_file.download_to_drive(custom_path=str(temp_path))
         recognized_text = transcribe_audio(str(temp_path))
     except Exception as exc:
-        logger.exception("Ошибка распознавания голосового сообщения: %s", exc)
+        logger.exception("workout_voice_input | Ошибка распознавания голоса: %s", exc)
         await update.message.reply_text(
             "Не удалось распознать голос. Попробуйте еще раз или введите текстом.",
         )
@@ -221,9 +230,12 @@ async def workout_voice_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         temp_path.unlink(missing_ok=True)
 
     if not recognized_text:
+        logger.info("workout_voice_input | user=%s empty transcription", update.effective_user.id if update.effective_user else 0)
         await update.message.reply_text("Голос распознан пусто. Попробуйте еще раз.")
         return States.WORKOUT_INPUT.value
 
+    uid = update.effective_user.id if update.effective_user else 0
+    logger.info("workout_voice_input | user=%s recognized=%r", uid, recognized_text[:60])
     context.user_data["pending_voice_text"] = recognized_text
     context.user_data["awaiting_voice_correction"] = False
     await update.message.reply_text(
@@ -323,6 +335,7 @@ async def _do_save_workout_log(
     session.add(log)
     name = ex.name if ex else str(exercise_id)
     body = getattr(ex, "body_part", "—")
+    logger.info("exercise_log | session_id=%s exercise_id=%s %s %s×%s", session_id, exercise_id, name, sets, weight_kg)
     return name, body
 
 
@@ -379,6 +392,7 @@ async def workout_pick_create(update: Update, context: ContextTypes.DEFAULT_TYPE
             template_exercise_ids = [te.exercise_id for te in wrk.template.template_exercises]
         user = await _get_user(session, update.effective_user.id, update.effective_user.username)
         ex = await _find_or_create_exercise(session, user.id, pending["name"], template_exercise_ids)
+        logger.info("workout_pick_create | user=%s session_id=%s created_exercise id=%s name=%r", user.id, session_id, ex.id, ex.name)
         name, body = await _do_save_workout_log(
             session, session_id, ex.id,
             pending["sets"], pending.get("reps"), pending["weight_kg"],
@@ -408,8 +422,10 @@ async def _save_parsed_input(
 ) -> str | None:
     parsed = parse_exercise_line(text)
     if not parsed:
+        logger.debug("_save_parsed_input | parse_exercise_line failed text=%r", text[:50])
         return None
     if not update.effective_user or not update.effective_chat:
+        logger.warning("_save_parsed_input | no user or chat")
         return None
 
     async with get_session() as session:
@@ -420,6 +436,7 @@ async def _save_parsed_input(
         )
         wrk_session = result.scalar_one_or_none()
         if not wrk_session:
+            logger.warning("_save_parsed_input | session_id=%s not found", session_id)
             return None
         template_exercise_ids = None
         if wrk_session.template and wrk_session.template.template_exercises:
@@ -433,6 +450,8 @@ async def _save_parsed_input(
         if not matches and template_exercise_ids:
             matches = await _find_matching_exercises(session, user.id, search_name, None)
 
+        uid = update.effective_user.id
+        logger.info("_save_parsed_input | session_id=%s user=%s name=%r matches=%s", session_id, uid, parsed.name, len(matches))
         # Точное совпадение — сохраняем сразу
         if len(matches) == 1 and matches[0].name.lower() == search_name.lower():
             ex = matches[0]
@@ -497,13 +516,16 @@ async def workout_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         wrk = result.scalar_one_or_none()
         if wrk:
-            wrk.ended_at = datetime.utcnow()
+            wrk.ended_at = datetime.now(timezone.utc)
+            n_logs = len(wrk.exercise_logs)
+            logger.info("workout_done | session_id=%s logs_count=%s", session_id, n_logs)
             lines = ["Тренировка завершена!\n", "Записи за тренировку:"]
             for idx, log in enumerate(wrk.exercise_logs, start=1):
                 r = f"×{log.reps}" if log.reps else ""
                 lines.append(f"{idx}. {log.exercise.name}: {log.sets}{r}×{log.weight_kg} кг")
             await query.edit_message_text("\n".join(lines), reply_markup=main_menu())
         else:
+            logger.warning("workout_done | session_id=%s not found", session_id)
             await query.edit_message_text("Сессия не найдена.", reply_markup=main_menu())
 
     context.user_data.pop("workout_session_id", None)

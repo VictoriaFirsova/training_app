@@ -1,5 +1,7 @@
+import logging
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
 _MODEL = None
 
 
@@ -22,9 +24,12 @@ def transcribe_audio(audio_path: str) -> str:
     """Распознает аудио локально и возвращает текст."""
     path = Path(audio_path)
     if not path.exists():
+        logger.error("transcribe_audio | файл не найден: %s", audio_path)
         raise FileNotFoundError(f"Файл не найден: {audio_path}")
 
+    logger.info("transcribe_audio | start path=%s", audio_path)
     model = _get_model()
     segments, _ = model.transcribe(str(path), language="ru")
     text = " ".join(segment.text.strip() for segment in segments).strip()
+    logger.info("transcribe_audio | result=%r", text[:80] if text else "(пусто)")
     return text
