@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 
 from bot.handlers.common import get_or_create_user, safe_edit_message_text
+from bot.messages import RESTART_MSG
 from bot.keyboards import (
     CB_EXERCISES,
     BODY_PARTS,
@@ -191,7 +192,7 @@ async def exercise_add_body_part(update: Update, context: ContextTypes.DEFAULT_T
         body_part = "Другое"
     name = context.user_data.pop("exercise_name", "")
     if not name or not update.effective_user:
-        await query.edit_message_text("Сессия истекла. Начните заново.", reply_markup=back_to_main())
+        await query.edit_message_text(RESTART_MSG, reply_markup=back_to_main())
         return ConversationHandler.END
     async with get_session() as session:
         user = await _get_user(session, update.effective_user.id, update.effective_user.username)

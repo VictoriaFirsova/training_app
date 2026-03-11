@@ -13,6 +13,7 @@ from telegram.ext import (
 )
 
 from bot.handlers.common import get_or_create_user, safe_edit_message_text
+from bot.messages import RESTART_MSG
 from bot.handlers.exercises import _find_similar_exercises
 from bot.keyboards import (
     BODY_PARTS,
@@ -168,7 +169,7 @@ async def template_add_exercise_new_name(update: Update, context: ContextTypes.D
     t_id = context.user_data.get("template_new_exercise_id")
     body_idx = context.user_data.get("template_new_exercise_body_idx")
     if not t_id or not update.effective_user:
-        await update.message.reply_text("Сессия истекла. Начните заново.", reply_markup=back_to_main())
+        await update.message.reply_text(RESTART_MSG, reply_markup=back_to_main())
         return ConversationHandler.END
     context.user_data["template_new_exercise_name"] = name
     async with get_session() as session:
@@ -233,7 +234,7 @@ async def template_add_exercise_pick_or_create(update: Update, context: ContextT
     name = context.user_data.get("template_new_exercise_name", "")
     body_idx = context.user_data.get("template_new_exercise_body_idx")
     if not t_id or not update.effective_user:
-        await query.edit_message_text("Сессия истекла. Начните заново.", reply_markup=back_to_main())
+        await query.edit_message_text(RESTART_MSG, reply_markup=back_to_main())
         return ConversationHandler.END
     if "use_ex" in query.data and len(parts) >= 4:
         ex_id = int(parts[3])
@@ -346,7 +347,7 @@ async def template_add_exercise_new_body(update: Update, context: ContextTypes.D
     name = context.user_data.pop("template_new_exercise_name", "")
     context.user_data.pop("template_new_exercise_id", None)
     if not name or not update.effective_user:
-        await query.edit_message_text("Сессия истекла. Начните заново.", reply_markup=back_to_main())
+        await query.edit_message_text(RESTART_MSG, reply_markup=back_to_main())
         return ConversationHandler.END
     async with get_session() as session:
         user = await _get_user(session, update.effective_user.id, update.effective_user.username)

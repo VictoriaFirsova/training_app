@@ -17,6 +17,7 @@ from telegram.ext import (
 )
 
 from bot.handlers.common import get_or_create_user
+from bot.messages import RESTART_MSG
 from bot.keyboards import (
     BODY_PARTS,
     CB_WORKOUT,
@@ -163,7 +164,7 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return States.WORKOUT_INPUT.value
     session_id = context.user_data.get("workout_session_id")
     if not session_id:
-        await update.message.reply_text("Сессия тренировки не найдена. Начните заново.", reply_markup=main_menu())
+        await update.message.reply_text(RESTART_MSG, reply_markup=main_menu())
         return ConversationHandler.END
 
     text = update.message.text.strip()
@@ -211,7 +212,7 @@ async def workout_voice_input(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     session_id = context.user_data.get("workout_session_id")
     if not session_id:
-        await update.message.reply_text("Сессия тренировки не найдена. Начните заново.", reply_markup=main_menu())
+        await update.message.reply_text(RESTART_MSG, reply_markup=main_menu())
         return ConversationHandler.END
 
     voice_file = await update.message.voice.get_file()
@@ -353,7 +354,7 @@ async def workout_pick_exercise(update: Update, context: ContextTypes.DEFAULT_TY
     ex_id = int(parts[3])
     pending = context.user_data.pop("pending_workout_pick", None)
     if not pending:
-        await query.edit_message_text("Сессия истекла. Введите упражнение заново.")
+        await query.edit_message_text(RESTART_MSG, reply_markup=main_menu())
         return States.WORKOUT_INPUT.value
     async with get_session() as session:
         name, body = await _do_save_workout_log(
@@ -379,7 +380,7 @@ async def workout_pick_create(update: Update, context: ContextTypes.DEFAULT_TYPE
     session_id = int(parts[2])
     pending = context.user_data.get("pending_workout_pick")
     if not pending or not update.effective_user:
-        await query.edit_message_text("Сессия истекла. Введите упражнение заново.")
+        await query.edit_message_text(RESTART_MSG, reply_markup=main_menu())
         return States.WORKOUT_INPUT.value
     name = pending["name"]
     await query.edit_message_text(
@@ -406,7 +407,7 @@ async def workout_pick_create_body(update: Update, context: ContextTypes.DEFAULT
         body_part = "Другое"
     pending = context.user_data.pop("pending_workout_pick", None)
     if not pending or not update.effective_user:
-        await query.edit_message_text("Сессия истекла. Введите упражнение заново.")
+        await query.edit_message_text(RESTART_MSG, reply_markup=main_menu())
         return States.WORKOUT_INPUT.value
     async with get_session() as session:
         result = await session.execute(
@@ -415,8 +416,11 @@ async def workout_pick_create_body(update: Update, context: ContextTypes.DEFAULT
             .where(WorkoutSession.id == session_id)
         )
         wrk = result.scalar_one_or_none()
+        if not wrk:
+            await query.edit_message_text(RESTART_MSG, reply_markup=main_menu())
+            return States.WORKOUT_INPUT.value
         template_exercise_ids = None
-        if wrk and wrk.template and wrk.template.template_exercises:
+        if wrk.template and wrk.template.template_exercises:
             template_exercise_ids = [te.exercise_id for te in wrk.template.template_exercises]
         user = await _get_user(session, update.effective_user.id, update.effective_user.username)
         ex = Exercise(user_id=user.id, name=pending["name"], body_part=body_part)
@@ -556,7 +560,7 @@ async def workout_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await query.edit_message_text("\n".join(lines), reply_markup=main_menu())
         else:
             logger.warning("workout_done | session_id=%s not found", session_id)
-            await query.edit_message_text("Сессия не найдена.", reply_markup=main_menu())
+            await query.edit_message_text(RESTART_MSG, reply_markup=main_menu())
 
     context.user_data.pop("workout_session_id", None)
     context.user_data.pop("workout_template_id", None)
@@ -589,7 +593,7 @@ async def workout_undo_last(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         wrk_session = wrk_result.scalar_one_or_none()
         if not wrk_session:
             if query.message:
-                await query.message.reply_text("Сессия не найдена.")
+                await query.message.reply_text(RESTART_MSG, reply_markup=main_menu())
             return States.WORKOUT_INPUT.value
 
         log_result = await session.execute(
