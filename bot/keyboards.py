@@ -210,13 +210,13 @@ def workout_pick_exercise_keyboard(
 
 
 def workout_confirm_create_exercise_keyboard(session_id: int, parsed_name: str) -> InlineKeyboardMarkup:
-    """Подтверждение создания нового упражнения."""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Да, создать", callback_data=f"{CB_WORKOUT}:pick_new:{session_id}"),
-            InlineKeyboardButton("❌ Отмена", callback_data=f"{CB_WORKOUT}:pick_cancel:{session_id}"),
-        ],
-    ])
+    """Выбор части тела при создании нового упражнения во время тренировки."""
+    buttons = [
+        [InlineKeyboardButton(part, callback_data=f"{CB_WORKOUT}:pick_new_body:{session_id}:{i}")]
+        for i, part in enumerate(BODY_PARTS)
+    ]
+    buttons.append([InlineKeyboardButton("❌ Отмена", callback_data=f"{CB_WORKOUT}:pick_cancel:{session_id}")])
+    return InlineKeyboardMarkup(buttons)
 
 
 def workout_voice_review_keyboard() -> InlineKeyboardMarkup:

@@ -18,6 +18,7 @@ from telegram.ext import (
 
 from bot.handlers.common import get_or_create_user
 from bot.keyboards import (
+    BODY_PARTS,
     CB_WORKOUT,
     CB_DONE,
     main_menu,
@@ -367,7 +368,7 @@ async def workout_pick_exercise(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def workout_pick_create(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Создание нового упражнения и сохранение записи."""
+    """Показать выбор части тела перед созданием нового упражнения (из списка совпадений)."""
     query = update.callback_query
     if not query or not query.data:
         return States.WORKOUT_INPUT.value
@@ -376,6 +377,33 @@ async def workout_pick_create(update: Update, context: ContextTypes.DEFAULT_TYPE
     if len(parts) < 3 or parts[1] != "pick_new":
         return States.WORKOUT_INPUT.value
     session_id = int(parts[2])
+    pending = context.user_data.get("pending_workout_pick")
+    if not pending or not update.effective_user:
+        await query.edit_message_text("Сессия истекла. Введите упражнение заново.")
+        return States.WORKOUT_INPUT.value
+    name = pending["name"]
+    await query.edit_message_text(
+        f"Выберите часть тела для «{name}»:",
+        reply_markup=workout_confirm_create_exercise_keyboard(session_id, name),
+    )
+    return States.WORKOUT_INPUT.value
+
+
+async def workout_pick_create_body(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Создание нового упражнения с выбранной частью тела и сохранение записи."""
+    query = update.callback_query
+    if not query or not query.data:
+        return States.WORKOUT_INPUT.value
+    await query.answer()
+    parts = query.data.split(":")
+    if len(parts) < 4 or parts[1] != "pick_new_body":
+        return States.WORKOUT_INPUT.value
+    session_id = int(parts[2])
+    try:
+        body_idx = int(parts[3])
+        body_part = BODY_PARTS[body_idx] if 0 <= body_idx < len(BODY_PARTS) else "Другое"
+    except (ValueError, IndexError):
+        body_part = "Другое"
     pending = context.user_data.pop("pending_workout_pick", None)
     if not pending or not update.effective_user:
         await query.edit_message_text("Сессия истекла. Введите упражнение заново.")
@@ -391,8 +419,10 @@ async def workout_pick_create(update: Update, context: ContextTypes.DEFAULT_TYPE
         if wrk and wrk.template and wrk.template.template_exercises:
             template_exercise_ids = [te.exercise_id for te in wrk.template.template_exercises]
         user = await _get_user(session, update.effective_user.id, update.effective_user.username)
-        ex = await _find_or_create_exercise(session, user.id, pending["name"], template_exercise_ids)
-        logger.info("workout_pick_create | user=%s session_id=%s created_exercise id=%s name=%r", user.id, session_id, ex.id, ex.name)
+        ex = Exercise(user_id=user.id, name=pending["name"], body_part=body_part)
+        session.add(ex)
+        await session.flush()
+        logger.info("workout_pick_create_body | user=%s ex_id=%s name=%r body=%s", user.id, ex.id, ex.name, body_part)
         name, body = await _do_save_workout_log(
             session, session_id, ex.id,
             pending["sets"], pending.get("reps"), pending["weight_kg"],
@@ -492,7 +522,7 @@ async def _save_parsed_input(
         }
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"Упражнение «{parsed.name}» не найдено. Создать новое?",
+            text=f"Упражнение «{parsed.name}» не найдено. Выберите часть тела для нового упражнения:",
             reply_markup=workout_confirm_create_exercise_keyboard(session_id, parsed.name),
         )
         return SAVE_PENDING
@@ -616,6 +646,7 @@ def setup_workout_handlers(application):
                 CallbackQueryHandler(workout_voice_cancel, pattern=f"^{CB_WORKOUT}:voice_cancel$"),
                 CallbackQueryHandler(workout_pick_exercise, pattern=f"^{CB_WORKOUT}:pick_ex:\\d+:\\d+$"),
                 CallbackQueryHandler(workout_pick_create, pattern=f"^{CB_WORKOUT}:pick_new:\\d+$"),
+                CallbackQueryHandler(workout_pick_create_body, pattern=f"^{CB_WORKOUT}:pick_new_body:\\d+:\\d+$"),
                 CallbackQueryHandler(workout_pick_cancel, pattern=f"^{CB_WORKOUT}:pick_cancel:\\d+$"),
             ],
         },
