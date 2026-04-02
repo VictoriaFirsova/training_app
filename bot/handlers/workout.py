@@ -188,7 +188,10 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return States.WORKOUT_INPUT.value
         _clear_pending_voice(context)
         logger.info("workout_input | user=%s saved (voice_correction) result=%s", uid, saved[:60] if saved else "")
-        await update.message.reply_text(f"✅ {saved}")
+        await update.message.reply_text(
+            f"✅ {saved}",
+            reply_markup=workout_in_progress_keyboard(session_id),
+        )
         return States.WORKOUT_INPUT.value
 
     saved = await _save_parsed_input(update, context, text, session_id)
@@ -202,7 +205,10 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
         return States.WORKOUT_INPUT.value
 
-    await update.message.reply_text(f"✅ {saved}")
+    await update.message.reply_text(
+        f"✅ {saved}",
+        reply_markup=workout_in_progress_keyboard(session_id),
+    )
     return States.WORKOUT_INPUT.value
 
 
@@ -273,7 +279,20 @@ async def workout_voice_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return States.WORKOUT_INPUT.value
 
-    await query.edit_message_text(f"🎤 Распознано: {recognized_text}\n✅ {saved}")
+    if query.message:
+        await query.edit_message_text(
+            f"🎤 Распознано:\n{recognized_text}\n\n✅ Сохранено.",
+            reply_markup=None,
+        )
+        await query.message.reply_text(
+            f"✅ {saved}",
+            reply_markup=workout_in_progress_keyboard(session_id),
+        )
+    else:
+        await query.edit_message_text(
+            f"🎤 Распознано: {recognized_text}\n✅ {saved}",
+            reply_markup=workout_in_progress_keyboard(session_id),
+        )
     _clear_pending_voice(context)
     return States.WORKOUT_INPUT.value
 
@@ -362,9 +381,15 @@ async def workout_pick_exercise(update: Update, context: ContextTypes.DEFAULT_TY
             pending["sets"], pending.get("reps"), pending["weight_kg"],
         )
     reps_str = f"×{pending.get('reps')}" if pending.get("reps") else ""
-    await query.edit_message_text(
-        f"✅ {name} ({body}): {pending['sets']}{reps_str}×{pending['weight_kg']} кг"
-    )
+    detail = f"✅ {name} ({body}): {pending['sets']}{reps_str}×{pending['weight_kg']} кг"
+    if query.message:
+        await query.edit_message_text("Запись добавлена.", reply_markup=None)
+        await query.message.reply_text(
+            detail,
+            reply_markup=workout_in_progress_keyboard(session_id),
+        )
+    else:
+        await query.edit_message_text(detail, reply_markup=workout_in_progress_keyboard(session_id))
     return States.WORKOUT_INPUT.value
 
 
@@ -432,9 +457,17 @@ async def workout_pick_create_body(update: Update, context: ContextTypes.DEFAULT
             pending["sets"], pending.get("reps"), pending["weight_kg"],
         )
     reps_str = f"×{pending.get('reps')}" if pending.get("reps") else ""
-    await query.edit_message_text(
+    detail = (
         f"✅ {name} ({body}) — создано и записано: {pending['sets']}{reps_str}×{pending['weight_kg']} кг"
     )
+    if query.message:
+        await query.edit_message_text("Запись добавлена.", reply_markup=None)
+        await query.message.reply_text(
+            detail,
+            reply_markup=workout_in_progress_keyboard(session_id),
+        )
+    else:
+        await query.edit_message_text(detail, reply_markup=workout_in_progress_keyboard(session_id))
     return States.WORKOUT_INPUT.value
 
 
@@ -605,7 +638,10 @@ async def workout_undo_last(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         last_log = log_result.scalar_one_or_none()
         if not last_log:
             if query.message:
-                await query.message.reply_text("Нечего отменять: записей пока нет.")
+                await query.message.reply_text(
+                    "Нечего отменять: записей пока нет.",
+                    reply_markup=workout_in_progress_keyboard(session_id),
+                )
             return States.WORKOUT_INPUT.value
 
         ex_result = await session.execute(select(Exercise).where(Exercise.id == last_log.exercise_id))
@@ -616,7 +652,8 @@ async def workout_undo_last(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if query.message:
         await query.message.reply_text(
-            f"↩ Удалена последняя запись: {ex_name}: {last_log.sets}{reps_str}×{last_log.weight_kg} кг"
+            f"↩ Удалена последняя запись: {ex_name}: {last_log.sets}{reps_str}×{last_log.weight_kg} кг",
+            reply_markup=workout_in_progress_keyboard(session_id),
         )
     return States.WORKOUT_INPUT.value
 
