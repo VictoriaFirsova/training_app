@@ -6,7 +6,8 @@ from telegram.ext import Application
 
 from bot import setup_handlers
 from bot.deploy_notify import maybe_broadcast_deploy_notice
-from config import BOT_TOKEN
+from bot.workout_auto_end import close_stale_workout_sessions, stale_workout_background_loop
+from config import BOT_TOKEN, WORKOUT_AUTO_END_HOURS, WORKOUT_AUTO_END_INTERVAL_SEC
 from db.database import init_database
 _log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_LEVEL = getattr(logging, _log_level, logging.INFO)
@@ -42,6 +43,19 @@ def main() -> None:
             await maybe_broadcast_deploy_notice(application)
         except Exception as e:
             logger.exception("Рассылка после деплоя: %s", e)
+        if WORKOUT_AUTO_END_HOURS > 0:
+            try:
+                n = await close_stale_workout_sessions()
+                if n:
+                    logger.info("При старте закрыто висящих тренировок: %s", n)
+            except Exception as e:
+                logger.exception("Автозавершение при старте: %s", e)
+            application.create_task(stale_workout_background_loop(application))
+            logger.info(
+                "Автозавершение тренировок: через %s ч, проверка каждые %s с",
+                WORKOUT_AUTO_END_HOURS,
+                max(60, WORKOUT_AUTO_END_INTERVAL_SEC),
+            )
 
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     application.add_error_handler(error_handler)

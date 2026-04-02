@@ -22,6 +22,20 @@ DEPLOY_NOTIFY_TEXT = os.getenv(
     "🔄 Бот обновлён (новая версия на сервере).\n\n"
     "Если меню или кнопки ведут себя странно — нажмите /start.",
 ).replace("\\n", "\n")
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+# Автозавершение «забытых» тренировок (ended_at = NULL дольше N часов после старта). 0 — выключено.
+WORKOUT_AUTO_END_HOURS = _float_env("WORKOUT_AUTO_END_HOURS", 4.0)
+# Как часто проверять БД (секунды). По умолчанию 15 минут.
+WORKOUT_AUTO_END_INTERVAL_SEC = int(_float_env("WORKOUT_AUTO_END_INTERVAL_SEC", 900.0))
+
 if not DATABASE_URL:
     db_path = Path(__file__).parent / "training.db"
     DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
