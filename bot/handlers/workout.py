@@ -2,6 +2,7 @@ import logging
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select
 from sqlalchemy.sql import func
@@ -17,7 +18,7 @@ from telegram.ext import (
 )
 
 from bot.handlers.common import get_or_create_user
-from config import RESTART_MSG
+from config import RESTART_MSG, TIMEZONE
 from bot.keyboards import (
     BODY_PARTS,
     CB_WORKOUT,
@@ -36,6 +37,10 @@ from services.parser import parse_exercise_line
 from services.speech import transcribe_audio
 
 logger = logging.getLogger(__name__)
+
+
+def _workout_progress_kb(context: ContextTypes.DEFAULT_TYPE, session_id: int):
+    return workout_in_progress_keyboard(session_id, context.user_data.get("workout_template_id"))
 
 
 async def _get_user(session, telegram_id: int, username: str | None) -> User:
@@ -126,16 +131,115 @@ async def workout_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     context.user_data["workout_template_id"] = template_id
     uid = update.effective_user.id if update.effective_user else 0
     logger.info("workout_start | user=%s session_id=%s template_id=%s", uid, session_id, template_id)
+    hint_prev = ""
+    if template_id is not None:
+        hint_prev = (
+            "📊 Кнопка «Прошлая (этот план)» — цифры с последней завершённой тренировки "
+            "с тем же планом (часто это прошлая неделя).\n\n"
+        )
     await query.edit_message_text(
         "Тренировка начата.\n\n"
+        f"{hint_prev}"
         "Вводите упражнения в формате:\n"
         "• жим 4×8×80\n"
         "• присед 3 подхода по 100 кг\n"
         "• становая 5×5×120\n\n"
         "Каждое упражнение — с новой строки или отдельным сообщением.\n"
         "Когда закончите — нажмите «Завершить тренировку».",
-        reply_markup=workout_in_progress_keyboard(session_id),
+        reply_markup=workout_in_progress_keyboard(session_id, template_id),
     )
+    return States.WORKOUT_INPUT.value
+
+
+async def workout_previous_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показать записи последней завершённой тренировки с тем же шаблоном (планом)."""
+    query = update.callback_query
+    if not query or not query.data:
+        return States.WORKOUT_INPUT.value
+    await query.answer()
+    parts = query.data.split(":")
+    if len(parts) != 3 or parts[1] != "prev":
+        return States.WORKOUT_INPUT.value
+    try:
+        cb_session_id = int(parts[2])
+    except ValueError:
+        return States.WORKOUT_INPUT.value
+    active_id = context.user_data.get("workout_session_id")
+    if active_id != cb_session_id or not update.effective_user:
+        if query.message:
+            await query.message.reply_text(RESTART_MSG, reply_markup=main_menu())
+        return ConversationHandler.END
+
+    async with get_session() as session:
+        user = await _get_user(session, update.effective_user.id, update.effective_user.username)
+        cur_result = await session.execute(
+            select(WorkoutSession).where(
+                WorkoutSession.id == cb_session_id,
+                WorkoutSession.user_id == user.id,
+            )
+        )
+        current = cur_result.scalar_one_or_none()
+        if not current or current.template_id is None:
+            if query.message:
+                await query.message.reply_text(
+                    "Сравнение с прошлым разом доступно только для тренировки по плану (не «свободная»).",
+                    reply_markup=_workout_progress_kb(context, cb_session_id),
+                )
+            return States.WORKOUT_INPUT.value
+
+        tpl_result = await session.execute(
+            select(WorkoutTemplate).where(WorkoutTemplate.id == current.template_id)
+        )
+        tpl = tpl_result.scalar_one_or_none()
+        tpl_name = tpl.name if tpl else "План"
+
+        prev_result = await session.execute(
+            select(WorkoutSession)
+            .options(selectinload(WorkoutSession.exercise_logs).selectinload(ExerciseLog.exercise))
+            .where(
+                WorkoutSession.user_id == user.id,
+                WorkoutSession.template_id == current.template_id,
+                WorkoutSession.ended_at.isnot(None),
+                WorkoutSession.id != cb_session_id,
+            )
+            .order_by(WorkoutSession.ended_at.desc())
+            .limit(1)
+        )
+        prev = prev_result.scalar_one_or_none()
+
+    if not prev:
+        if query.message:
+            await query.message.reply_text(
+                f"Пока нет завершённой тренировки «{tpl_name}» раньше — после первой полной тренировки здесь появятся цифры.",
+                reply_markup=_workout_progress_kb(context, cb_session_id),
+            )
+        return States.WORKOUT_INPUT.value
+
+    try:
+        tz = ZoneInfo(TIMEZONE)
+    except Exception:
+        tz = timezone.utc
+    ended_local = prev.ended_at.astimezone(tz) if prev.ended_at else None
+    date_str = ended_local.strftime("%d.%m.%Y %H:%M") if ended_local else "—"
+
+    lines = [
+        f"📊 Прошлый раз: «{tpl_name}»",
+        f"Завершена: {date_str}",
+        "",
+        "Записи:",
+    ]
+    logs = sorted(prev.exercise_logs, key=lambda lg: lg.id)
+    for idx, log in enumerate(logs, start=1):
+        ex_name = log.exercise.name if log.exercise else f"#{log.exercise_id}"
+        r = f"×{log.reps}" if log.reps else ""
+        lines.append(f"{idx}. {ex_name}: {log.sets}{r}×{log.weight_kg} кг")
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3997] + "…"
+
+    if query.message:
+        await query.message.reply_text(text, reply_markup=_workout_progress_kb(context, cb_session_id))
     return States.WORKOUT_INPUT.value
 
 
@@ -190,7 +294,7 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         logger.info("workout_input | user=%s saved (voice_correction) result=%s", uid, saved[:60] if saved else "")
         await update.message.reply_text(
             f"✅ {saved}",
-            reply_markup=workout_in_progress_keyboard(session_id),
+            reply_markup=_workout_progress_kb(context, session_id),
         )
         return States.WORKOUT_INPUT.value
 
@@ -207,7 +311,7 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     await update.message.reply_text(
         f"✅ {saved}",
-        reply_markup=workout_in_progress_keyboard(session_id),
+        reply_markup=_workout_progress_kb(context, session_id),
     )
     return States.WORKOUT_INPUT.value
 
@@ -286,12 +390,12 @@ async def workout_voice_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         )
         await query.message.reply_text(
             f"✅ {saved}",
-            reply_markup=workout_in_progress_keyboard(session_id),
+            reply_markup=_workout_progress_kb(context, session_id),
         )
     else:
         await query.edit_message_text(
             f"🎤 Распознано: {recognized_text}\n✅ {saved}",
-            reply_markup=workout_in_progress_keyboard(session_id),
+            reply_markup=_workout_progress_kb(context, session_id),
         )
     _clear_pending_voice(context)
     return States.WORKOUT_INPUT.value
@@ -386,10 +490,10 @@ async def workout_pick_exercise(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("Запись добавлена.", reply_markup=None)
         await query.message.reply_text(
             detail,
-            reply_markup=workout_in_progress_keyboard(session_id),
+            reply_markup=_workout_progress_kb(context, session_id),
         )
     else:
-        await query.edit_message_text(detail, reply_markup=workout_in_progress_keyboard(session_id))
+        await query.edit_message_text(detail, reply_markup=_workout_progress_kb(context, session_id))
     return States.WORKOUT_INPUT.value
 
 
@@ -464,10 +568,10 @@ async def workout_pick_create_body(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text("Запись добавлена.", reply_markup=None)
         await query.message.reply_text(
             detail,
-            reply_markup=workout_in_progress_keyboard(session_id),
+            reply_markup=_workout_progress_kb(context, session_id),
         )
     else:
-        await query.edit_message_text(detail, reply_markup=workout_in_progress_keyboard(session_id))
+        await query.edit_message_text(detail, reply_markup=_workout_progress_kb(context, session_id))
     return States.WORKOUT_INPUT.value
 
 
@@ -640,7 +744,7 @@ async def workout_undo_last(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             if query.message:
                 await query.message.reply_text(
                     "Нечего отменять: записей пока нет.",
-                    reply_markup=workout_in_progress_keyboard(session_id),
+                    reply_markup=_workout_progress_kb(context, session_id),
                 )
             return States.WORKOUT_INPUT.value
 
@@ -653,7 +757,7 @@ async def workout_undo_last(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if query.message:
         await query.message.reply_text(
             f"↩ Удалена последняя запись: {ex_name}: {last_log.sets}{reps_str}×{last_log.weight_kg} кг",
-            reply_markup=workout_in_progress_keyboard(session_id),
+            reply_markup=_workout_progress_kb(context, session_id),
         )
     return States.WORKOUT_INPUT.value
 
@@ -682,6 +786,7 @@ def setup_workout_handlers(application):
                 MessageHandler(filters.VOICE, workout_voice_input),
                 CallbackQueryHandler(workout_done, pattern=f"^{CB_WORKOUT}:{CB_DONE}:\\d+"),
                 CallbackQueryHandler(workout_undo_last, pattern=f"^{CB_WORKOUT}:undo:\\d+$"),
+                CallbackQueryHandler(workout_previous_results, pattern=f"^{CB_WORKOUT}:prev:\\d+$"),
                 CallbackQueryHandler(workout_voice_confirm, pattern=f"^{CB_WORKOUT}:voice_confirm$"),
                 CallbackQueryHandler(workout_voice_edit, pattern=f"^{CB_WORKOUT}:voice_edit$"),
                 CallbackQueryHandler(workout_voice_cancel, pattern=f"^{CB_WORKOUT}:voice_cancel$"),

@@ -145,12 +145,26 @@ def workout_template_select_keyboard(templates: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-def workout_in_progress_keyboard(session_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("↩ Отменить последнюю запись", callback_data=f"{CB_WORKOUT}:undo:{session_id}")],
-        [InlineKeyboardButton("✅ Завершить тренировку", callback_data=f"{CB_WORKOUT}:{CB_DONE}:{session_id}")],
-        [InlineKeyboardButton("◀ Отмена", callback_data=f"{CB_MAIN}:menu")],
-    ])
+def workout_in_progress_keyboard(session_id: int, template_id: int | None = None) -> InlineKeyboardMarkup:
+    """Если template_id задан (тренировка по плану) — кнопка «прошлый раз» по этому же шаблону."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if template_id is not None:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "📊 Прошлая (этот план)",
+                    callback_data=f"{CB_WORKOUT}:prev:{session_id}",
+                ),
+            ]
+        )
+    rows.extend(
+        [
+            [InlineKeyboardButton("↩ Отменить последнюю запись", callback_data=f"{CB_WORKOUT}:undo:{session_id}")],
+            [InlineKeyboardButton("✅ Завершить тренировку", callback_data=f"{CB_WORKOUT}:{CB_DONE}:{session_id}")],
+            [InlineKeyboardButton("◀ Отмена", callback_data=f"{CB_MAIN}:menu")],
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
 
 
 BODY_PARTS = ("Ноги", "Грудь", "Спина", "Плечи", "Руки", "Пресс", "Другое")
