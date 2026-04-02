@@ -15,6 +15,13 @@ RESTART_MSG = (
     "⚠️ Бот был перезапущен (обновление).\n\n"
     "Нажмите /start и начните заново."
 )
+
+# Рассылка при деплое на Railway (см. bot/deploy_notify.py). Текст можно переопределить в .env.
+DEPLOY_NOTIFY_TEXT = os.getenv(
+    "DEPLOY_NOTIFY_TEXT",
+    "🔄 Бот обновлён (новая версия на сервере).\n\n"
+    "Если меню или кнопки ведут себя странно — нажмите /start.",
+).replace("\\n", "\n")
 if not DATABASE_URL:
     db_path = Path(__file__).parent / "training.db"
     DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"

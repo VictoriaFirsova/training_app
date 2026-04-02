@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import sys
@@ -6,6 +5,7 @@ import sys
 from telegram.ext import Application
 
 from bot import setup_handlers
+from bot.deploy_notify import maybe_broadcast_deploy_notice
 from config import BOT_TOKEN
 from db.database import init_database
 _log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -31,13 +31,17 @@ def main() -> None:
         logger.error("BOT_TOKEN не задан. Создайте файл .env с BOT_TOKEN=...")
         return
 
-    async def post_init(_):
+    async def post_init(application: Application):
         try:
             await init_database()
             logger.info("База данных инициализирована")
         except Exception as e:
             logger.exception("Ошибка инициализации БД: %s", e)
             raise
+        try:
+            await maybe_broadcast_deploy_notice(application)
+        except Exception as e:
+            logger.exception("Рассылка после деплоя: %s", e)
 
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     application.add_error_handler(error_handler)

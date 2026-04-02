@@ -9,6 +9,15 @@ class Base(DeclarativeBase):
     pass
 
 
+class AppMeta(Base):
+    """Простые ключ-значение (например, последний деплой, для которого отправлена рассылка)."""
+
+    __tablename__ = "app_meta"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(512))
+
+
 class User(Base):
     __tablename__ = "users"
 
