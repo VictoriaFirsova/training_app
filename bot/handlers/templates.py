@@ -484,9 +484,14 @@ async def template_delete_do(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     await query.answer()
     parts = query.data.split(":")
-    # del:confirm:id
-    if len(parts) >= 4 and parts[2] == CB_DELETE and parts[3] == "confirm":
-        t_id = int(parts[4])
+    # tmpl:del:confirm:<id>
+    if (
+        len(parts) == 4
+        and parts[0] == CB_TEMPLATES
+        and parts[1] == CB_DELETE
+        and parts[2] == "confirm"
+    ):
+        t_id = int(parts[3])
     else:
         return
     async with get_session() as session:
@@ -512,10 +517,14 @@ async def template_delete_handler(update: Update, context: ContextTypes.DEFAULT_
     parts = query.data.split(":")
     if f"{CB_TEMPLATES}:{CB_DELETE}:" not in query.data:
         return
+    # tmpl:del:confirm:<id> -> удалить (answer внутри template_delete_do)
+    if len(parts) == 4 and parts[2] == "confirm":
+        await template_delete_do(update, context)
+        return
     await query.answer()
-    # del:123 -> show confirm
-    if len(parts) == 4 and parts[2] == CB_DELETE:
-        t_id = int(parts[3])
+    # tmpl:del:<id> -> подтверждение
+    if len(parts) == 3 and parts[0] == CB_TEMPLATES and parts[1] == CB_DELETE:
+        t_id = int(parts[2])
         async with get_session() as session:
             result = await session.execute(select(WorkoutTemplate).where(WorkoutTemplate.id == t_id))
             tpl = result.scalar_one_or_none()
@@ -524,10 +533,9 @@ async def template_delete_handler(update: Update, context: ContextTypes.DEFAULT_
                 f"Точно удалить тренировку «{tpl.name}»?",
                 reply_markup=template_delete_confirm_keyboard(t_id),
             )
+        else:
+            await query.edit_message_text("Тренировка не найдена.", reply_markup=back_to_main())
         return
-    # del:confirm:123 -> do delete
-    if len(parts) >= 5 and parts[3] == "confirm":
-        await template_delete_do(update, context)
 
 
 async def template_create_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
