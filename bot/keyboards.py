@@ -11,6 +11,10 @@ CB_ADD = "add"
 CB_BACK = "back"
 CB_SELECT = "sel"
 CB_DONE = "done"
+# Просмотр записей перед сохранением тренировки
+CB_RV_SAVE = "rvsave"
+CB_RV_EDIT = "rvedit"
+CB_RV_DEL = "rvdel"
 
 
 def main_menu() -> InlineKeyboardMarkup:
@@ -165,6 +169,17 @@ def workout_in_progress_keyboard(session_id: int, template_id: int | None = None
         ]
     )
     return InlineKeyboardMarkup(rows)
+
+
+def workout_review_keyboard(session_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Сохранить тренировку", callback_data=f"{CB_WORKOUT}:{CB_RV_SAVE}:{session_id}")],
+            [InlineKeyboardButton("✏ Изменить строку", callback_data=f"{CB_WORKOUT}:{CB_RV_EDIT}:{session_id}")],
+            [InlineKeyboardButton("🗑 Удалить строку", callback_data=f"{CB_WORKOUT}:{CB_RV_DEL}:{session_id}")],
+            [InlineKeyboardButton("◀ Отмена", callback_data=f"{CB_MAIN}:menu")],
+        ]
+    )
 
 
 BODY_PARTS = ("Ноги", "Грудь", "Спина", "Плечи", "Руки", "Пресс", "Другое")

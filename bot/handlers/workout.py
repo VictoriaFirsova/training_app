@@ -23,12 +23,16 @@ from bot.keyboards import (
     BODY_PARTS,
     CB_WORKOUT,
     CB_DONE,
+    CB_RV_DEL,
+    CB_RV_EDIT,
+    CB_RV_SAVE,
     main_menu,
     workout_in_progress_keyboard,
     workout_pick_exercise_keyboard,
     workout_confirm_create_exercise_keyboard,
     workout_voice_review_keyboard,
     workout_template_select_keyboard,
+    workout_review_keyboard,
 )
 from bot.states import States
 from db.database import get_session
@@ -196,7 +200,11 @@ async def workout_previous_results(update: Update, context: ContextTypes.DEFAULT
             return States.WORKOUT_INPUT.value
 
         tpl_result = await session.execute(
-            select(WorkoutTemplate).where(WorkoutTemplate.id == current.template_id)
+            select(WorkoutTemplate)
+            .options(
+                selectinload(WorkoutTemplate.template_exercises).selectinload(TemplateExercise.exercise),
+            )
+            .where(WorkoutTemplate.id == current.template_id)
         )
         tpl = tpl_result.scalar_one_or_none()
         tpl_name = tpl.name if tpl else "План"
@@ -214,6 +222,15 @@ async def workout_previous_results(update: Update, context: ContextTypes.DEFAULT
             .limit(1)
         )
         prev = prev_result.scalar_one_or_none()
+
+        missing_from_plan: list[str] = []
+        if prev and tpl and tpl.template_exercises:
+            logged_ids = {lg.exercise_id for lg in prev.exercise_logs}
+            for te in sorted(tpl.template_exercises, key=lambda x: x.order):
+                if te.exercise_id not in logged_ids:
+                    missing_from_plan.append(
+                        te.exercise.name if te.exercise else f"#{te.exercise_id}"
+                    )
 
     if not prev:
         if query.message:
@@ -241,6 +258,12 @@ async def workout_previous_results(update: Update, context: ContextTypes.DEFAULT
         ex_name = log.exercise.name if log.exercise else f"#{log.exercise_id}"
         r = f"×{log.reps}" if log.reps else ""
         lines.append(f"{idx}. {ex_name}: {log.sets}{r}×{log.weight_kg} кг")
+
+    if missing_from_plan:
+        lines.append("")
+        lines.append("Не сделано в прошлый раз:")
+        for name in missing_from_plan:
+            lines.append(f"  • {name}")
 
     text = "\n".join(lines)
     if len(text) > 4000:
@@ -597,6 +620,268 @@ async def workout_pick_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
 SAVE_PENDING = "_PENDING_PICK"
 
 
+def _compact_digits_line_for_log(log: ExerciseLog) -> str:
+    """Одна строка с цифрами для копирования (формат как при вводе: подходы×повторы×вес)."""
+    r = log.reps if log.reps is not None else 1
+    w = log.weight_kg
+    if float(w) == int(w):
+        w = int(w)
+    return f"{log.sets}×{r}×{w}"
+
+
+def _format_workout_review_body(wrk: WorkoutSession) -> str:
+    lines = [
+        "Проверьте записи перед сохранением.\n",
+        "Можно сохранить тренировку или изменить / удалить строку по номеру.",
+        "",
+    ]
+    logs = sorted(wrk.exercise_logs, key=lambda lg: lg.id)
+    for idx, log in enumerate(logs, start=1):
+        ex = log.exercise
+        r = f"×{log.reps}" if log.reps else ""
+        lines.append(f"{idx}. {ex.name}: {log.sets}{r}×{log.weight_kg} кг")
+    return "\n".join(lines)
+
+
+async def workout_review_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if not query or not query.data:
+        return ConversationHandler.END
+    await query.answer()
+    parts = query.data.split(":")
+    if len(parts) < 3 or parts[1] != CB_RV_SAVE:
+        return ConversationHandler.END
+    session_id = int(parts[2])
+    if context.user_data.get("workout_session_id") != session_id or not update.effective_user:
+        if query.message:
+            await query.message.reply_text(RESTART_MSG, reply_markup=main_menu())
+        return ConversationHandler.END
+
+    async with get_session() as session:
+        user = await _get_user(session, update.effective_user.id, update.effective_user.username)
+        result = await session.execute(
+            select(WorkoutSession)
+            .options(selectinload(WorkoutSession.exercise_logs).selectinload(ExerciseLog.exercise))
+            .where(WorkoutSession.id == session_id, WorkoutSession.user_id == user.id)
+        )
+        wrk = result.scalar_one_or_none()
+        if not wrk:
+            await query.edit_message_text(RESTART_MSG, reply_markup=main_menu())
+            _clear_review_context(context)
+            return ConversationHandler.END
+        n_logs = len(wrk.exercise_logs)
+        if n_logs == 0:
+            await session.delete(wrk)
+            await query.edit_message_text(
+                "Записей не было — тренировка не сохранена.",
+                reply_markup=main_menu(),
+            )
+            _clear_review_context(context)
+            return ConversationHandler.END
+        wrk.ended_at = datetime.now(timezone.utc)
+        logger.info("workout_review_save | session_id=%s logs=%s", session_id, n_logs)
+        lines = ["Тренировка завершена!\n", "Записи за тренировку:"]
+        for idx, log in enumerate(sorted(wrk.exercise_logs, key=lambda lg: lg.id), start=1):
+            r = f"×{log.reps}" if log.reps else ""
+            lines.append(f"{idx}. {log.exercise.name}: {log.sets}{r}×{log.weight_kg} кг")
+        await query.edit_message_text("\n".join(lines), reply_markup=main_menu())
+
+    _clear_review_context(context)
+    return ConversationHandler.END
+
+
+def _clear_review_context(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("workout_session_id", None)
+    context.user_data.pop("workout_template_id", None)
+    context.user_data.pop("review_await", None)
+    context.user_data.pop("review_log_id", None)
+    _clear_pending_voice(context)
+    _clear_pending_pick(context)
+
+
+async def workout_review_edit_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if not query:
+        return States.WORKOUT_REVIEW.value
+    await query.answer()
+    parts = query.data.split(":")
+    if len(parts) < 3 or parts[1] != CB_RV_EDIT:
+        return States.WORKOUT_REVIEW.value
+    session_id = int(parts[2])
+    if context.user_data.get("workout_session_id") != session_id:
+        return States.WORKOUT_REVIEW.value
+    context.user_data["review_await"] = "edit_idx"
+    context.user_data.pop("review_log_id", None)
+    await query.message.reply_text(
+        "Какую позицию изменить? Введите номер строки из списка (целое число).",
+    )
+    return States.WORKOUT_REVIEW.value
+
+
+async def workout_review_del_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if not query:
+        return States.WORKOUT_REVIEW.value
+    await query.answer()
+    parts = query.data.split(":")
+    if len(parts) < 3 or parts[1] != CB_RV_DEL:
+        return States.WORKOUT_REVIEW.value
+    session_id = int(parts[2])
+    if context.user_data.get("workout_session_id") != session_id:
+        return States.WORKOUT_REVIEW.value
+    context.user_data["review_await"] = "del_idx"
+    await query.message.reply_text(
+        "Какую строку удалить? Введите номер позиции из списка (целое число).",
+    )
+    return States.WORKOUT_REVIEW.value
+
+
+async def workout_review_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not update.message or not update.message.text:
+        return States.WORKOUT_REVIEW.value
+    session_id = context.user_data.get("workout_session_id")
+    if not session_id or not update.effective_user:
+        await update.message.reply_text(RESTART_MSG, reply_markup=main_menu())
+        return ConversationHandler.END
+
+    mode = context.user_data.get("review_await")
+    text = update.message.text.strip()
+
+    if mode == "edit_idx":
+        if not text.isdigit():
+            await update.message.reply_text("Нужно одно целое число — номер строки из списка.")
+            return States.WORKOUT_REVIEW.value
+        pos = int(text)
+        async with get_session() as session:
+            user = await _get_user(session, update.effective_user.id, update.effective_user.username)
+            wrk_result = await session.execute(
+                select(WorkoutSession)
+                .options(selectinload(WorkoutSession.exercise_logs).selectinload(ExerciseLog.exercise))
+                .where(WorkoutSession.id == session_id, WorkoutSession.user_id == user.id)
+            )
+            wrk = wrk_result.scalar_one_or_none()
+            if not wrk:
+                await update.message.reply_text(RESTART_MSG, reply_markup=main_menu())
+                _clear_review_context(context)
+                return ConversationHandler.END
+            logs = sorted(wrk.exercise_logs, key=lambda lg: lg.id)
+            if pos < 1 or pos > len(logs):
+                await update.message.reply_text(f"Номер от 1 до {len(logs)}.")
+                return States.WORKOUT_REVIEW.value
+            log = logs[pos - 1]
+            ex = log.exercise
+            compact = _compact_digits_line_for_log(log)
+            context.user_data["review_await"] = "edit_parse"
+            context.user_data["review_log_id"] = log.id
+        await update.message.reply_text(
+            f"Упражнение: {ex.name}\n"
+            "Название менять нельзя — только цифры подходов, повторов и веса.\n\n"
+            "Скопируйте строку ниже, исправьте и отправьте одним сообщением "
+            "(можно только эту строку с цифрами и знаками × x):\n\n"
+            f"{compact}",
+        )
+        return States.WORKOUT_REVIEW.value
+
+    if mode == "del_idx":
+        if not text.isdigit():
+            await update.message.reply_text("Нужно одно целое число — номер строки из списка.")
+            return States.WORKOUT_REVIEW.value
+        pos = int(text)
+        async with get_session() as session:
+            user = await _get_user(session, update.effective_user.id, update.effective_user.username)
+            wrk_result = await session.execute(
+                select(WorkoutSession)
+                .options(selectinload(WorkoutSession.exercise_logs))
+                .where(WorkoutSession.id == session_id, WorkoutSession.user_id == user.id)
+            )
+            wrk = wrk_result.scalar_one_or_none()
+            if not wrk:
+                await update.message.reply_text(RESTART_MSG, reply_markup=main_menu())
+                _clear_review_context(context)
+                return ConversationHandler.END
+            logs = sorted(wrk.exercise_logs, key=lambda lg: lg.id)
+            if pos < 1 or pos > len(logs):
+                await update.message.reply_text(f"Номер от 1 до {len(logs)}.")
+                return States.WORKOUT_REVIEW.value
+            log = logs[pos - 1]
+            await session.delete(log)
+        context.user_data.pop("review_await", None)
+        await update.message.reply_text("Строка удалена.")
+        async with get_session() as session:
+            user = await _get_user(session, update.effective_user.id, update.effective_user.username)
+            wrk_result = await session.execute(
+                select(WorkoutSession)
+                .options(selectinload(WorkoutSession.exercise_logs).selectinload(ExerciseLog.exercise))
+                .where(WorkoutSession.id == session_id, WorkoutSession.user_id == user.id)
+            )
+            wrk = wrk_result.scalar_one_or_none()
+        if wrk and wrk.exercise_logs:
+            await update.message.reply_text(
+                _format_workout_review_body(wrk),
+                reply_markup=workout_review_keyboard(session_id),
+            )
+        else:
+            await update.message.reply_text(
+                "Записей не осталось. Нажмите «Сохранить тренировку» — пустая сессия не будет сохранена в историю.",
+                reply_markup=workout_review_keyboard(session_id),
+            )
+        return States.WORKOUT_REVIEW.value
+
+    if mode == "edit_parse":
+        log_id = context.user_data.get("review_log_id")
+        if not log_id:
+            context.user_data["review_await"] = None
+            return States.WORKOUT_REVIEW.value
+        async with get_session() as session:
+            user = await _get_user(session, update.effective_user.id, update.effective_user.username)
+            log_result = await session.execute(
+                select(ExerciseLog)
+                .options(selectinload(ExerciseLog.exercise))
+                .join(WorkoutSession)
+                .where(
+                    ExerciseLog.id == log_id,
+                    WorkoutSession.id == session_id,
+                    WorkoutSession.user_id == user.id,
+                )
+            )
+            log = log_result.scalar_one_or_none()
+            if not log:
+                await update.message.reply_text(RESTART_MSG, reply_markup=main_menu())
+                _clear_review_context(context)
+                return ConversationHandler.END
+            ex = log.exercise
+            parsed = parse_exercise_line(f"{ex.name} {text}")
+            if not parsed:
+                await update.message.reply_text(
+                    "Не удалось разобрать. Введите строку в том же формате, что в подсказке (цифры и ×), "
+                    "или /cancel.",
+                )
+                return States.WORKOUT_REVIEW.value
+            log.sets = parsed.sets
+            log.reps = parsed.reps
+            log.weight_kg = parsed.weight_kg
+        context.user_data["review_await"] = None
+        context.user_data.pop("review_log_id", None)
+        await update.message.reply_text("Запись обновлена.")
+        async with get_session() as session:
+            user = await _get_user(session, update.effective_user.id, update.effective_user.username)
+            wrk_result = await session.execute(
+                select(WorkoutSession)
+                .options(selectinload(WorkoutSession.exercise_logs).selectinload(ExerciseLog.exercise))
+                .where(WorkoutSession.id == session_id, WorkoutSession.user_id == user.id)
+            )
+            wrk = wrk_result.scalar_one_or_none()
+        if wrk:
+            await update.message.reply_text(
+                _format_workout_review_body(wrk),
+                reply_markup=workout_review_keyboard(session_id),
+            )
+        return States.WORKOUT_REVIEW.value
+
+    await update.message.reply_text("Используйте кнопки под предыдущим сообщением.")
+    return States.WORKOUT_REVIEW.value
+
+
 async def _save_parsed_input(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, session_id: int
 ) -> str | None:
@@ -680,39 +965,55 @@ async def _save_parsed_input(
 
 async def workout_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    if not query or not query.data:
+    if not query or not query.data or not update.effective_user:
         return ConversationHandler.END
     await query.answer()
     parts = query.data.split(":")
     if len(parts) < 3 or parts[1] != CB_DONE:
         return ConversationHandler.END
     session_id = int(parts[2])
+    if context.user_data.get("workout_session_id") != session_id:
+        await query.edit_message_text(RESTART_MSG, reply_markup=main_menu())
+        _clear_review_context(context)
+        return ConversationHandler.END
 
     async with get_session() as session:
+        user = await _get_user(session, update.effective_user.id, update.effective_user.username)
         result = await session.execute(
             select(WorkoutSession)
             .options(selectinload(WorkoutSession.exercise_logs).selectinload(ExerciseLog.exercise))
-            .where(WorkoutSession.id == session_id)
+            .where(WorkoutSession.id == session_id, WorkoutSession.user_id == user.id)
         )
         wrk = result.scalar_one_or_none()
-        if wrk:
-            wrk.ended_at = datetime.now(timezone.utc)
-            n_logs = len(wrk.exercise_logs)
-            logger.info("workout_done | session_id=%s logs_count=%s", session_id, n_logs)
-            lines = ["Тренировка завершена!\n", "Записи за тренировку:"]
-            for idx, log in enumerate(wrk.exercise_logs, start=1):
-                r = f"×{log.reps}" if log.reps else ""
-                lines.append(f"{idx}. {log.exercise.name}: {log.sets}{r}×{log.weight_kg} кг")
-            await query.edit_message_text("\n".join(lines), reply_markup=main_menu())
-        else:
-            logger.warning("workout_done | session_id=%s not found", session_id)
+        if not wrk:
+            logger.warning("workout_done | session_id=%s not found or wrong user", session_id)
             await query.edit_message_text(RESTART_MSG, reply_markup=main_menu())
+            _clear_review_context(context)
+            return ConversationHandler.END
 
-    context.user_data.pop("workout_session_id", None)
-    context.user_data.pop("workout_template_id", None)
-    _clear_pending_voice(context)
-    _clear_pending_pick(context)
-    return ConversationHandler.END
+        n_logs = len(wrk.exercise_logs)
+        logger.info("workout_done | session_id=%s logs_count=%s", session_id, n_logs)
+        if n_logs == 0:
+            await session.delete(wrk)
+            await query.edit_message_text(
+                "Записей не было — пустая тренировка не сохранена в историю.",
+                reply_markup=main_menu(),
+            )
+            context.user_data.pop("workout_session_id", None)
+            context.user_data.pop("workout_template_id", None)
+            _clear_pending_voice(context)
+            _clear_pending_pick(context)
+            return ConversationHandler.END
+
+        await query.edit_message_text(
+            _format_workout_review_body(wrk),
+            reply_markup=workout_review_keyboard(session_id),
+        )
+        context.user_data.pop("review_await", None)
+        context.user_data.pop("review_log_id", None)
+        _clear_pending_voice(context)
+        _clear_pending_pick(context)
+        return States.WORKOUT_REVIEW.value
 
 
 async def workout_undo_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -772,12 +1073,23 @@ async def workout_undo_last(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    session_id = context.user_data.get("workout_session_id")
+    if session_id and update.effective_user:
+        async with get_session() as session:
+            user = await _get_user(session, update.effective_user.id, update.effective_user.username)
+            wrk_result = await session.execute(
+                select(WorkoutSession).where(
+                    WorkoutSession.id == session_id,
+                    WorkoutSession.user_id == user.id,
+                )
+            )
+            wrk = wrk_result.scalar_one_or_none()
+            if wrk:
+                await session.delete(wrk)
+                logger.info("cancel | удалена сессия session_id=%s", session_id)
     if update.message:
         await update.message.reply_text("Тренировка отменена.", reply_markup=main_menu())
-    context.user_data.pop("workout_session_id", None)
-    context.user_data.pop("workout_template_id", None)
-    _clear_pending_voice(context)
-    _clear_pending_pick(context)
+    _clear_review_context(context)
     return ConversationHandler.END
 
 
@@ -803,6 +1115,12 @@ def setup_workout_handlers(application):
                 CallbackQueryHandler(workout_pick_create, pattern=f"^{CB_WORKOUT}:pick_new:\\d+$"),
                 CallbackQueryHandler(workout_pick_create_body, pattern=f"^{CB_WORKOUT}:pick_new_body:\\d+:\\d+$"),
                 CallbackQueryHandler(workout_pick_cancel, pattern=f"^{CB_WORKOUT}:pick_cancel:\\d+$"),
+            ],
+            States.WORKOUT_REVIEW.value: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, workout_review_message),
+                CallbackQueryHandler(workout_review_save, pattern=f"^{CB_WORKOUT}:{CB_RV_SAVE}:\\d+$"),
+                CallbackQueryHandler(workout_review_edit_cb, pattern=f"^{CB_WORKOUT}:{CB_RV_EDIT}:\\d+$"),
+                CallbackQueryHandler(workout_review_del_cb, pattern=f"^{CB_WORKOUT}:{CB_RV_DEL}:\\d+$"),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],

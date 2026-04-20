@@ -13,3 +13,4 @@ class States(Enum):
     TEMPLATE_NEW_EXERCISE_PICK_OR_CREATE = auto()
     TEMPLATE_NEW_EXERCISE_BODY_PART = auto()
     WORKOUT_INPUT = auto()
+    WORKOUT_REVIEW = auto()
