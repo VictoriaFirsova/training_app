@@ -776,10 +776,11 @@ async def workout_review_message(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(
             f"Упражнение: {ex.name}\n"
             "Название менять нельзя — только цифры подходов, повторов и веса.\n\n"
-            "Скопируйте строку ниже, исправьте и отправьте одним сообщением "
-            "(можно только эту строку с цифрами и знаками × x):\n\n"
-            f"{compact}",
+            "Строка в маске: (подходов) × (повторений) × (килограмм), например 4×8×80.\n\n"
+            "Следующим сообщением пришлю только эту строку — скопируйте, исправьте и отправьте одним сообщением "
+            "(цифры и знаки × или x).",
         )
+        await update.message.reply_text(compact)
         return States.WORKOUT_REVIEW.value
 
     if mode == "del_idx":
