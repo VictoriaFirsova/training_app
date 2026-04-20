@@ -38,6 +38,17 @@ from services.speech import transcribe_audio
 
 logger = logging.getLogger(__name__)
 
+# Подсказки по вводу (см. services/parser.py)
+_WORKOUT_FORMAT_INTRO = (
+    "Вводите упражнение одной строкой:\n"
+    "• Один подход — вес и повторы: жим 100кг 10, жим 100 kg x 10, жим 100 10 раз, вес 100 10\n"
+    "• Несколько подходов подряд: жим 4×8×80 (подходы × повторы × вес)\n"
+    "• Или словами: присед 3 подхода по 100 кг\n\n"
+)
+_WORKOUT_PARSE_EXAMPLES_SHORT = (
+    "Примеры: жим 100кг 10 · жим 100 kg x 10 · жим 4×8×80 · присед 3 подхода по 100 кг · жим 5 по 15"
+)
+
 
 def _workout_progress_kb(context: ContextTypes.DEFAULT_TYPE, session_id: int):
     return workout_in_progress_keyboard(session_id, context.user_data.get("workout_template_id"))
@@ -140,10 +151,7 @@ async def workout_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await query.edit_message_text(
         "Тренировка начата.\n\n"
         f"{hint_prev}"
-        "Вводите упражнения в формате:\n"
-        "• жим 4×8×80\n"
-        "• присед 3 подхода по 100 кг\n"
-        "• становая 5×5×120\n\n"
+        f"{_WORKOUT_FORMAT_INTRO}"
         "Каждое упражнение — с новой строки или отдельным сообщением.\n"
         "Когда закончите — нажмите «Завершить тренировку».",
         reply_markup=workout_in_progress_keyboard(session_id, template_id),
@@ -287,6 +295,7 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             logger.warning("workout_input | user=%s parse_failed (voice_correction) text=%r", uid, text[:50])
             await update.message.reply_text(
                 "Не удалось разобрать исправленный текст.\n"
+                f"{_WORKOUT_PARSE_EXAMPLES_SHORT}\n"
                 "Введите еще раз или напишите «отмена».",
             )
             return States.WORKOUT_INPUT.value
@@ -305,7 +314,7 @@ async def workout_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not saved:
         logger.warning("workout_input | user=%s parse_failed text=%r", uid, text[:50])
         await update.message.reply_text(
-            "Не удалось распознать. Примеры:\nжим 4×8×80\nжим 5 по 15\nприсед 3 по 10 с 100 кг",
+            f"Не удалось распознать.\n{_WORKOUT_PARSE_EXAMPLES_SHORT}",
         )
         return States.WORKOUT_INPUT.value
 
@@ -377,7 +386,7 @@ async def workout_voice_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         return States.WORKOUT_INPUT.value
     if not saved:
         await query.edit_message_text(
-            "Не удалось разобрать распознанный текст.\n"
+            f"Не удалось разобрать распознанный текст.\n{_WORKOUT_PARSE_EXAMPLES_SHORT}\n"
             "Нажмите «Исправить» и введите руками.",
             reply_markup=workout_voice_review_keyboard(),
         )
