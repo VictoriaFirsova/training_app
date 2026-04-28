@@ -145,6 +145,7 @@ _BETWEEN_ALT = (
     r"|\s*->\s*"
     r")"
 )
+_BETWEEN_EXPLICIT = r"(?:на|х|x|по|это|on|->|[:/*=]|-)"
 
 
 def _parse_float(num: str) -> float:
@@ -226,6 +227,17 @@ def _match_weight_reps_suffix(suffix: str) -> Optional[tuple[float, int]]:
         if _ok_weight_reps(w, r):
             return w, r
 
+    # --- Повторы + разделитель + число с кг (10 x 80кг => вес 80, повторы 10) ---
+    m = re.match(
+        rf"^{_NUM}\s*(?:{_BETWEEN_ALT})+\s*{_NUM}{_KG_UNIT}\s*$",
+        s,
+        re.IGNORECASE,
+    )
+    if m:
+        r, w = int(m.group(1)), _parse_float(m.group(2))
+        if _ok_weight_reps(w, r):
+            return w, r
+
     # --- 100к 10 (к как сокращение кг) ---
     m = re.match(
         rf"^{_NUM}к\s*(?:{_BETWEEN_ALT})*\s*{_NUM}\s*(?:{_REP_WORD})?\s*$",
@@ -271,6 +283,17 @@ def _match_weight_reps_suffix(suffix: str) -> Optional[tuple[float, int]]:
     # --- Два числа: вес без «кг», повторы с маркером (100 10раз, 100 на 10 раз) ---
     m = re.match(
         rf"^{_NUM}\s+(?:{_BETWEEN_ALT})*\s*{_NUM}\s*(?:{_REP_WORD})\s*$",
+        s,
+        re.IGNORECASE,
+    )
+    if m:
+        w, r = _parse_float(m.group(1)), int(m.group(2))
+        if _ok_weight_reps(w, r):
+            return w, r
+
+    # --- Два числа с явным разделителем без единиц (17 на 25 => вес 17, повторы 25) ---
+    m = re.match(
+        rf"^{_NUM}\s*(?:{_BETWEEN_EXPLICIT})\s*{_NUM}\s*$",
         s,
         re.IGNORECASE,
     )

@@ -6,6 +6,7 @@ from telegram import Update
 from telegram.error import BadRequest
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
+from bot.handlers.stats import show_stats_menu
 from bot.keyboards import CB_MAIN, main_menu
 from db.database import get_session
 from db.models import User
@@ -72,11 +73,7 @@ async def callback_main(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             reply_markup=main_menu(),
         )
     elif data == f"{CB_MAIN}:stats":
-        await safe_edit_message_text(
-            query,
-            "📊 Статистика появится на следующем этапе.",
-            reply_markup=main_menu(),
-        )
+        await show_stats_menu(update, context, page=0)
 
 
 def setup_common_handlers(application):

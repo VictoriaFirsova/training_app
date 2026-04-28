@@ -11,6 +11,7 @@ CB_ADD = "add"
 CB_BACK = "back"
 CB_SELECT = "sel"
 CB_DONE = "done"
+CB_STATS = "stats"
 # Просмотр записей перед сохранением тренировки
 CB_RV_SAVE = "rvsave"
 CB_RV_EDIT = "rvedit"
@@ -256,3 +257,21 @@ def workout_voice_review_keyboard() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("❌ Отменить", callback_data=f"{CB_WORKOUT}:voice_cancel")],
     ])
+
+
+def stats_exercises_keyboard(exercises: list, page: int = 0, per_page: int = 8) -> InlineKeyboardMarkup:
+    buttons = []
+    start = page * per_page
+    chunk = exercises[start : start + per_page]
+    for ex in chunk:
+        label = f"{ex.name} ({getattr(ex, 'body_part', 'Другое')})"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"{CB_STATS}:pick:{ex.id}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀ Назад", callback_data=f"{CB_STATS}:list:{page - 1}"))
+    if start + per_page < len(exercises):
+        nav.append(InlineKeyboardButton("Далее ▶", callback_data=f"{CB_STATS}:list:{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("◀ В главное меню", callback_data=f"{CB_MAIN}:menu")])
+    return InlineKeyboardMarkup(buttons)
