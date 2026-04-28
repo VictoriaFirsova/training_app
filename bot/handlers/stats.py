@@ -2,7 +2,7 @@ import logging
 import re
 
 from sqlalchemy import select
-from telegram import Update
+from telegram import BufferedInputFile, Update
 from telegram.error import BadRequest
 from telegram.ext import CallbackQueryHandler, ContextTypes
 
@@ -120,21 +120,21 @@ async def callback_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     title = exercise.name if exercise else f"#{exercise_id}"
     safe_title = re.sub(r"[^\w\-.]+", "_", title, flags=re.UNICODE).strip("_") or f"exercise_{exercise_id}"
-    with pdf_path.open("rb") as pdf_f:
+    try:
+        pdf_bytes = pdf_path.read_bytes()
+        csv_bytes = csv_path.read_bytes()
         await query.message.reply_document(
-            document=pdf_f,
-            filename=f"stats_{safe_title}.pdf",
+            document=BufferedInputFile(pdf_bytes, filename=f"stats_{safe_title}.pdf"),
             caption=f"Отчёт по упражнению: {title} ({period_key})",
         )
-    with csv_path.open("rb") as csv_f:
         await query.message.reply_document(
-            document=csv_f,
-            filename=f"stats_{safe_title}.csv",
+            document=BufferedInputFile(csv_bytes, filename=f"stats_{safe_title}.csv"),
             caption=f"Данные отчёта (CSV): {title}",
             reply_markup=main_menu(),
         )
-    pdf_path.unlink(missing_ok=True)
-    csv_path.unlink(missing_ok=True)
+    finally:
+        pdf_path.unlink(missing_ok=True)
+        csv_path.unlink(missing_ok=True)
 
 
 def setup_stats_handlers(application) -> None:

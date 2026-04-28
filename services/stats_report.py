@@ -69,6 +69,11 @@ def _register_font() -> str:
     candidates = [
         "C:/Windows/Fonts/arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
         "/Library/Fonts/Arial.ttf",
     ]
     for path in candidates:
@@ -107,6 +112,8 @@ def _build_block_table(
     title: str, headers: list[str], row: list[str], font_name: str, no_data_msg: Optional[str] = None
 ) -> list:
     styles = getSampleStyleSheet()
+    styles["Normal"].fontName = font_name
+    styles["Heading3"].fontName = font_name
     flow = [Paragraph(f"<b>{title}</b>", styles["Heading3"]), Spacer(1, 8)]
     data = [headers, row]
     table = Table(data, repeatRows=1)
