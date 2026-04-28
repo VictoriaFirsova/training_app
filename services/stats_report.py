@@ -1,4 +1,5 @@
 import calendar
+import os
 import csv
 import tempfile
 from dataclasses import dataclass
@@ -128,7 +129,9 @@ def _build_block_table(
     return flow
 
 
-async def build_exercise_stats_report(session, user_id: int, exercise_id: int) -> tuple[Path, Path]:
+async def build_exercise_stats_report(
+    session, user_id: int, exercise_id: int, custom_period_days: Optional[int] = None
+) -> tuple[Path, Path]:
     ex_result = await session.execute(
         select(Exercise).where(Exercise.user_id == user_id, Exercise.id == exercise_id)
     )
@@ -181,8 +184,6 @@ async def build_exercise_stats_report(session, user_id: int, exercise_id: int) -
     csv_fd, csv_path_raw = tempfile.mkstemp(prefix=f"stats_{exercise_id}_", suffix=".csv")
     pdf_fd, pdf_path_raw = tempfile.mkstemp(prefix=f"stats_{exercise_id}_", suffix=".pdf")
     # descriptor close (Windows needs explicit close before writing by path)
-    import os
-
     os.close(csv_fd)
     os.close(pdf_fd)
     csv_path = Path(csv_path_raw)
@@ -291,7 +292,11 @@ async def build_exercise_stats_report(session, user_id: int, exercise_id: int) -
             )
             writer.writerow([])
 
-            custom_entries = _period_entries(working, start_all, end_all)
+            custom_start = start_all
+            custom_end = end_all
+            if custom_period_days is not None:
+                custom_start = max(start_all, end_all - timedelta(days=max(1, custom_period_days) - 1))
+            custom_entries = _period_entries(working, custom_start, custom_end)
             custom_first, custom_last = _first_last(custom_entries)
             cw_start = custom_first.weight if custom_first else None
             cw_end = custom_last.weight if custom_last else None
@@ -303,7 +308,7 @@ async def build_exercise_stats_report(session, user_id: int, exercise_id: int) -
             cp_r = _safe_growth(float(cd_r), float(cr_start)) if cd_r is not None and cr_start is not None else None
             min_w = min((x.weight for x in custom_entries), default=None)
             max_w = max((x.weight for x in custom_entries), default=None)
-            custom_period = f"{start_all:%d.%m.%Y}-{end_all:%d.%m.%Y}"
+            custom_period = f"{custom_start:%d.%m.%Y}-{custom_end:%d.%m.%Y}"
             custom_row = [
                 exercise.name,
                 custom_period,
@@ -485,6 +490,15 @@ async def build_exercise_stats_report(session, user_id: int, exercise_id: int) -
             )
             elements.append(summary_table)
 
-    doc = SimpleDocTemplate(str(pdf_path), pagesize=A4)
+    doc = SimpleDocTemplate(
+        str(pdf_path),
+        pagesize=A4,
+        rightMargin=20,
+        leftMargin=20,
+        topMargin=20,
+        bottomMargin=20,
+    )
     doc.build(elements)
+    if not pdf_path.exists() or pdf_path.stat().st_size < 1024:
+        raise RuntimeError("PDF сформирован некорректно")
     return csv_path, pdf_path

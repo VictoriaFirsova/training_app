@@ -275,3 +275,15 @@ def stats_exercises_keyboard(exercises: list, page: int = 0, per_page: int = 8) 
         buttons.append(nav)
     buttons.append([InlineKeyboardButton("◀ В главное меню", callback_data=f"{CB_MAIN}:menu")])
     return InlineKeyboardMarkup(buttons)
+
+
+def stats_period_keyboard(exercise_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("За 1 месяц", callback_data=f"{CB_STATS}:period:{exercise_id}:1m")],
+            [InlineKeyboardButton("За 3 месяца", callback_data=f"{CB_STATS}:period:{exercise_id}:3m")],
+            [InlineKeyboardButton("За 6 месяцев", callback_data=f"{CB_STATS}:period:{exercise_id}:6m")],
+            [InlineKeyboardButton("За всё время", callback_data=f"{CB_STATS}:period:{exercise_id}:all")],
+            [InlineKeyboardButton("◀ К упражнениям", callback_data=f"{CB_STATS}:list:0")],
+        ]
+    )

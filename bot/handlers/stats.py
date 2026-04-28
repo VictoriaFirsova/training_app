@@ -6,7 +6,7 @@ from telegram import Update
 from telegram.error import BadRequest
 from telegram.ext import CallbackQueryHandler, ContextTypes
 
-from bot.keyboards import CB_STATS, main_menu, stats_exercises_keyboard
+from bot.keyboards import CB_STATS, main_menu, stats_exercises_keyboard, stats_period_keyboard
 from db.database import get_session
 from db.models import Exercise, User
 from services.stats_report import build_exercise_stats_report
@@ -78,11 +78,26 @@ async def callback_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await show_stats_menu(update, context, page=page)
         return
 
-    if action != "pick" or len(parts) < 3 or not parts[2].isdigit():
+    if action == "pick" and len(parts) >= 3 and parts[2].isdigit():
+        exercise_id = int(parts[2])
+        await _safe_edit(
+            query,
+            "Выберите период для блока «Статистика за произвольный период»:",
+            reply_markup=stats_period_keyboard(exercise_id),
+        )
+        return
+
+    if action != "period" or len(parts) < 4 or not parts[2].isdigit():
         await query.answer()
         return
 
     exercise_id = int(parts[2])
+    period_key = parts[3]
+    period_map = {"1m": 30, "3m": 90, "6m": 180, "all": None}
+    custom_period_days = period_map.get(period_key)
+    if period_key not in period_map:
+        await query.answer("Неизвестный период")
+        return
     await query.answer("Формирую отчёт…")
     await query.edit_message_text("Готовлю отчёт по упражнению…")
     try:
@@ -91,7 +106,12 @@ async def callback_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if user is None:
                 await query.message.reply_text("Пользователь не найден. Нажмите /start", reply_markup=main_menu())
                 return
-            csv_path, pdf_path = await build_exercise_stats_report(session, user.id, exercise_id)
+            csv_path, pdf_path = await build_exercise_stats_report(
+                session,
+                user.id,
+                exercise_id,
+                custom_period_days=custom_period_days,
+            )
             exercise = await session.get(Exercise, exercise_id)
     except Exception:
         logger.exception("callback_stats | report_build_failed user=%s exercise_id=%s", uid, exercise_id)
@@ -104,7 +124,7 @@ async def callback_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.reply_document(
             document=pdf_f,
             filename=f"stats_{safe_title}.pdf",
-            caption=f"Отчёт по упражнению: {title}",
+            caption=f"Отчёт по упражнению: {title} ({period_key})",
         )
     with csv_path.open("rb") as csv_f:
         await query.message.reply_document(
