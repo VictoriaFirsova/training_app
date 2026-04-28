@@ -66,7 +66,9 @@ def _safe_growth(delta: float, start: float) -> Optional[float]:
 
 
 def _register_font() -> str:
+    bundled = Path(__file__).resolve().parent.parent / "assets" / "fonts" / "NotoSans-Regular.ttf"
     candidates = [
+        str(bundled),
         "C:/Windows/Fonts/arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
