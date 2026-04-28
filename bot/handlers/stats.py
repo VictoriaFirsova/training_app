@@ -1,8 +1,9 @@
 import logging
 import re
+from io import BytesIO
 
 from sqlalchemy import select
-from telegram import BufferedInputFile, Update
+from telegram import InputFile, Update
 from telegram.error import BadRequest
 from telegram.ext import CallbackQueryHandler, ContextTypes
 
@@ -123,12 +124,14 @@ async def callback_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         pdf_bytes = pdf_path.read_bytes()
         csv_bytes = csv_path.read_bytes()
+        pdf_buf = BytesIO(pdf_bytes)
+        csv_buf = BytesIO(csv_bytes)
         await query.message.reply_document(
-            document=BufferedInputFile(pdf_bytes, filename=f"stats_{safe_title}.pdf"),
+            document=InputFile(pdf_buf, filename=f"stats_{safe_title}.pdf"),
             caption=f"Отчёт по упражнению: {title} ({period_key})",
         )
         await query.message.reply_document(
-            document=BufferedInputFile(csv_bytes, filename=f"stats_{safe_title}.csv"),
+            document=InputFile(csv_buf, filename=f"stats_{safe_title}.csv"),
             caption=f"Данные отчёта (CSV): {title}",
             reply_markup=main_menu(),
         )
