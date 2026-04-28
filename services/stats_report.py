@@ -188,7 +188,16 @@ async def build_exercise_stats_report(
         for r in rows:
             r.is_working = r.weight > threshold
 
-    working = [r for r in expanded if r.is_working]
+    all_dates = sorted({x.at.date() for x in expanded})
+    range_start = all_dates[0] if all_dates else None
+    range_end = all_dates[-1] if all_dates else None
+    if range_start is not None and range_end is not None and custom_period_days is not None:
+        range_start = max(range_start, range_end - timedelta(days=max(1, custom_period_days) - 1))
+
+    expanded_period = (
+        _period_entries(expanded, range_start, range_end) if range_start is not None and range_end is not None else []
+    )
+    working = [r for r in expanded_period if r.is_working]
 
     csv_fd, csv_path_raw = tempfile.mkstemp(prefix=f"stats_{exercise_id}_", suffix=".csv")
     pdf_fd, pdf_path_raw = tempfile.mkstemp(prefix=f"stats_{exercise_id}_", suffix=".pdf")
@@ -212,13 +221,17 @@ async def build_exercise_stats_report(
     with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f, delimiter=";")
 
-        if not expanded:
+        if not expanded_period:
             writer.writerow(["Упражнение", "Период", "Комментарий"])
-            writer.writerow([exercise.name, "", "Нет данных"])
-            elements.append(Paragraph("Нет данных по упражнению.", styles["Normal"]))
+            period_text = (
+                f"{range_start:%d.%m.%Y}-{range_end:%d.%m.%Y}"
+                if range_start is not None and range_end is not None
+                else ""
+            )
+            writer.writerow([exercise.name, period_text, "Нет данных за выбранный период"])
+            elements.append(Paragraph("Нет данных по упражнению за выбранный период.", styles["Normal"]))
         else:
-            all_dates = sorted({x.at.date() for x in expanded})
-            start_all, end_all = all_dates[0], all_dates[-1]
+            start_all, end_all = range_start, range_end
             latest = end_all
             week_start = latest - timedelta(days=6)
             month_start = latest.replace(day=1)
@@ -303,8 +316,6 @@ async def build_exercise_stats_report(
 
             custom_start = start_all
             custom_end = end_all
-            if custom_period_days is not None:
-                custom_start = max(start_all, end_all - timedelta(days=max(1, custom_period_days) - 1))
             custom_entries = _period_entries(working, custom_start, custom_end)
             custom_first, custom_last = _first_last(custom_entries)
             cw_start = custom_first.weight if custom_first else None
@@ -455,7 +466,7 @@ async def build_exercise_stats_report(
                 ]
             )
             grouped: dict[date, list[SessionSet]] = {}
-            for row in expanded:
+            for row in expanded_period:
                 grouped.setdefault(row.at.date(), []).append(row)
             summary_rows: list[list[str]] = []
             for day in sorted(grouped):
